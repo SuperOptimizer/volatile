@@ -31,26 +31,25 @@ from volatile.auto_seg import (
 def make_parallel_sheets_volume(
   shape=(40, 48, 48),
   sheet_z=(12, 28),
-  sheet_thickness=1,
   background=0.1,
   sheet_value=0.9,
+  sigma=1.0,
 ) -> np.ndarray:
   """
-  Build a float32 volume with two thin bright XY planes at z=sheet_z[0] and
-  z=sheet_z[1] against a dark background.
+  Build a float32 volume with two thin sheet planes at z=sheet_z[0] and
+  z=sheet_z[1] against a dark background, with a Gaussian profile along z.
 
-  The gradient across each sheet is strong, making them detectable by Sobel.
+  The Gaussian profile means the first derivative has a clear peak and the
+  second derivative crosses zero at exactly the sheet centre — ideal for the
+  ThaumatoAnakalyptor inflection-point detector.
   """
   D, H, W = shape
   vol = np.full(shape, background, dtype=np.float32)
+  zc = np.arange(D, dtype=np.float32)
   for sz in sheet_z:
-    for dz in range(-sheet_thickness, sheet_thickness + 1):
-      z = sz + dz
-      if 0 <= z < D:
-        vol[z, :, :] = sheet_value
-  # Add a smooth ramp so d1 (gradient) is well-defined and large at sheet surfaces
-  ramp = np.linspace(background, background * 1.5, D, dtype=np.float32)
-  vol += ramp[:, None, None] * 0.05
+    # Gaussian bump: sharp transition that creates a clean inflection at sz
+    profile = (sheet_value - background) * np.exp(-0.5 * ((zc - sz) / sigma) ** 2)
+    vol += profile[:, None, None]
   return np.clip(vol, 0, 1)
 
 

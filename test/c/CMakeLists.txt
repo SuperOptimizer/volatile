@@ -14,6 +14,7 @@ set(_core_only_tests
   test_real_data test_tracer
   test_umbilicus test_lineseg test_slicing test_graph_solver
   test_tiff_write test_binary_pyramid
+  test_diffusion
 )
 
 # core + render
@@ -55,7 +56,7 @@ set(_gui_tests
   test_menubar test_settings_dialog test_seg_panels test_overlay_vol
   test_about_dialog test_keybinds_dialog
   test_draw_panel test_file_dialog
-  test_vol_info_panel
+  test_vol_info_panel test_s3_browser
   test_statusbar test_scalebar
 )
 

@@ -91,7 +91,7 @@ git_store *git_store_open(const char *repo_path) {
   snprintf(check, sizeof(check), "git -C '%s' rev-parse --git-dir >/dev/null 2>&1",
            repo_path);
   if (system(check) != 0) {
-    if (git_run(g, "init -q") != 0) {
+    if (git_run(g, "init -q -b main") != 0) {
       LOG_ERROR("git_store_open: git init failed in '%s'", repo_path);
       free(g);
       return NULL;

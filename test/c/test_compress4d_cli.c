@@ -116,12 +116,13 @@ static float *read_float_file(const char *path, size_t *out_n) {
 // ---------------------------------------------------------------------------
 
 TEST test_codec_roundtrip_64cube(void) {
-  // Synthetic 64^3 volume: ramp + sine
+  // Synthetic 64^3 residual-like data: values in [-100, 100] (within ±127*quality clamp)
   const int N = 64 * 64 * 64;
   float *orig = malloc((size_t)N * sizeof(float));
   ASSERT(orig != NULL);
+  // Sine wave scaled to ±60 — stays well within ±127*quality=±127 for quality=1.0
   for (int i = 0; i < N; i++)
-    orig[i] = (float)i * 0.01f + sinf((float)i * 0.001f) * 50.0f;
+    orig[i] = sinf((float)i * 0.001f) * 60.0f + cosf((float)i * 0.0007f) * 30.0f;
 
   float quality = 1.0f;  // quantisation step
   size_t enc_len = 0;
@@ -151,7 +152,8 @@ TEST test_codec_roundtrip_fine_quality(void) {
   const int N = 512;
   float *orig = malloc((size_t)N * sizeof(float));
   ASSERT(orig != NULL);
-  for (int i = 0; i < N; i++) orig[i] = (float)i * 0.5f;
+  // Scale to [-10, 10] — within ±127*0.1=±12.7 clamp for quality=0.1
+  for (int i = 0; i < N; i++) orig[i] = sinf((float)i * 0.05f) * 10.0f;
 
   float quality = 0.1f;
   size_t enc_len = 0;

@@ -37,6 +37,7 @@
 #include "gui/about_dialog.h"
 #include "gui/keybinds_dialog.h"
 #include "gui/file_dialog.h"
+#include "gui/s3_browser.h"
 #include "gui/seg_panels.h"
 #include "gui/viewer_controls.h"
 #include "gui/draw_panel.h"
@@ -95,7 +96,7 @@ typedef struct {
   keybinds_dialog  *keybinds_dlg;
   file_dialog      *file_dlg_volpkg;
   file_dialog      *file_dlg_zarr;
-  file_dialog      *file_dlg_remote;
+  s3_browser       *s3_brow;
   app_state_t      *app;
   float_panels     *panels;
   app_layout       *layout;
@@ -106,7 +107,12 @@ static void cb_about(void *ctx)       { about_dialog_show(((menu_ctx*)ctx)->abou
 static void cb_keybinds(void *ctx)    { keybinds_dialog_show(((menu_ctx*)ctx)->keybinds_dlg); }
 static void cb_open_volpkg(void *ctx) { file_dialog_show(((menu_ctx*)ctx)->file_dlg_volpkg, NULL); }
 static void cb_open_zarr(void *ctx)   { file_dialog_show(((menu_ctx*)ctx)->file_dlg_zarr, NULL); }
-static void cb_open_remote(void *ctx) { file_dialog_show(((menu_ctx*)ctx)->file_dlg_remote, NULL); }
+static void cb_open_remote(void *ctx) {
+  menu_ctx *m = ctx;
+  // If no credentials are set in the browser, show cred_dialog first
+  if (!s3_browser_is_visible(m->s3_brow))
+    s3_browser_show(m->s3_brow);
+}
 
 static void cb_toggle_volumes(void *ctx) {
   layout_toggle_panel(((menu_ctx*)ctx)->layout, PANEL_VOLUME_BROWSER);
@@ -331,7 +337,7 @@ int main(int argc, char **argv) {
   keybinds_dialog  *keybinds_dlg = keybinds_dialog_new(binds);
   file_dialog      *fdlg_volpkg  = file_dialog_new("Open volpkg", "*.volpkg");
   file_dialog      *fdlg_zarr    = file_dialog_new("Open Local Zarr", "*.zarr");
-  file_dialog      *fdlg_remote  = file_dialog_new("Open Remote Volume", "*");
+  s3_browser       *s3_brow      = s3_browser_new();
   cred_dialog      *cred_dlg     = cred_dialog_new();
 
   file_dialog_add_bookmark(fdlg_volpkg, "Home",  getenv("HOME") ? getenv("HOME") : "/");
@@ -379,7 +385,7 @@ int main(int argc, char **argv) {
     .keybinds_dlg    = keybinds_dlg,
     .file_dlg_volpkg = fdlg_volpkg,
     .file_dlg_zarr   = fdlg_zarr,
-    .file_dlg_remote = fdlg_remote,
+    .s3_brow         = s3_brow,
     .app             = app,
     .panels          = &flt,
     .layout          = layout,
