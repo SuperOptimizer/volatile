@@ -185,7 +185,7 @@ int surface_history_list(surface_history *h, version_info *out,
     "SELECT version_id, user_id, timestamp, message"
     " FROM surface_versions"
     " WHERE surface_id = ?"
-    " ORDER BY timestamp DESC"
+    " ORDER BY timestamp DESC, version_id DESC"
     " LIMIT ?;";
 
   sqlite3_stmt *stmt = NULL;

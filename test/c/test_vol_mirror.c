@@ -205,16 +205,133 @@ TEST test_mirror_rechunk(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: compress4d detection and recompress skip logic
+// ---------------------------------------------------------------------------
+
+// Build a synthetic zarr whose .zarray declares compressor id "compress4d"
+static char g_c4d_zarr[256];
+
+static void setup_compress4d_source(void) {
+  snprintf(g_c4d_zarr, sizeof(g_c4d_zarr), "/tmp/mirror_c4d_%d.zarr", (int)getpid());
+  make_dir(g_c4d_zarr);
+
+  char l0[512]; snprintf(l0, sizeof(l0), "%s/0", g_c4d_zarr); make_dir(l0);
+  // declare compressor id as "compress4d"
+  const char *za =
+    "{\"chunks\":[4,4,4],\"shape\":[8,8,8],\"dtype\":\"|u1\","
+    "\"order\":\"C\","
+    "\"compressor\":{\"id\":\"compress4d\",\"clevel\":5,\"shuffle\":0},"
+    "\"zarr_format\":2}";
+  char zp[512]; snprintf(zp, sizeof(zp), "%s/.zarray", l0);
+  write_file(zp, za, strlen(za));
+
+  // write one chunk of raw bytes
+  uint8_t chunk[64];
+  for (int i = 0; i < 64; i++) chunk[i] = (uint8_t)i;
+  char cp[512]; snprintf(cp, sizeof(cp), "%s/0.0.0", l0);
+  write_file(cp, chunk, 64);
+}
+
+TEST test_mirror_detects_compress4d(void) {
+  setup_compress4d_source();
+
+  char cache[256];
+  snprintf(cache, sizeof(cache), "/tmp/mirror_c4d_cache_%d", (int)getpid());
+  make_dir(cache);
+
+  mirror_config cfg = {
+    .remote_url      = g_c4d_zarr,
+    .local_cache_dir = cache,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+
+  // should detect compress4d codec
+  ASSERT(vol_mirror_remote_is_compress4d(m));
+
+  // recompress should return true immediately (skipped) without force_recompress
+  ASSERT(vol_mirror_recompress(m));
+
+  vol_mirror_free(m);
+  PASS();
+}
+
+TEST test_mirror_force_recompress_overrides(void) {
+  char cache[256];
+  snprintf(cache, sizeof(cache), "/tmp/mirror_c4d_force_%d", (int)getpid());
+  make_dir(cache);
+
+  mirror_config cfg = {
+    .remote_url       = g_c4d_zarr,
+    .local_cache_dir  = cache,
+    .force_recompress = true,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+  ASSERT(vol_mirror_remote_is_compress4d(m));
+
+  // cache first so src has data
+  ASSERT(vol_mirror_cache_level(m, 0));
+
+  // with force_recompress=true, recompress should actually run (return true)
+  ASSERT(vol_mirror_recompress(m));
+
+  vol_mirror_free(m);
+  PASS();
+}
+
+TEST test_mirror_non_c4d_not_detected(void) {
+  // g_src_zarr uses compressor:null — should NOT be detected as compress4d
+  char cache[256];
+  snprintf(cache, sizeof(cache), "/tmp/mirror_nc4d_%d", (int)getpid());
+  make_dir(cache);
+
+  mirror_config cfg = {
+    .remote_url      = g_src_zarr,
+    .local_cache_dir = cache,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+  ASSERT_FALSE(vol_mirror_remote_is_compress4d(m));
+  vol_mirror_free(m);
+  PASS();
+}
+
+TEST test_mirror_no_volatile_server_for_local(void) {
+  // local path should never be detected as a volatile TCP server
+  char cache[256];
+  snprintf(cache, sizeof(cache), "/tmp/mirror_novolt_%d", (int)getpid());
+  make_dir(cache);
+
+  mirror_config cfg = {
+    .remote_url             = g_src_zarr,
+    .local_cache_dir        = cache,
+    .prefer_binary_protocol = true,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+  ASSERT_FALSE(vol_mirror_remote_is_volatile_server(m));
+  vol_mirror_free(m);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suite + main
 // ---------------------------------------------------------------------------
 
 SUITE(vol_mirror_suite) {
   RUN_TEST(test_mirror_new_opens_source);
   RUN_TEST(test_mirror_chunks_total);
+  // must be before cache/roundtrip tests that also use g_src_zarr
+  RUN_TEST(test_mirror_non_c4d_not_detected);
+  RUN_TEST(test_mirror_no_volatile_server_for_local);
   RUN_TEST(test_mirror_cache_level);
   RUN_TEST(test_mirror_cached_chunks_match_source);
   RUN_TEST(test_mirror_stats);
   RUN_TEST(test_mirror_rechunk);
+  RUN_TEST(test_mirror_detects_compress4d);
+  RUN_TEST(test_mirror_force_recompress_overrides);
+
 }
 
 GREATEST_MAIN_DEFS();

@@ -14,13 +14,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <pthread.h>
 #include <unistd.h>
 
 #define DEFAULT_MAX_CACHE_BYTES  (INT64_C(50) * 1024 * 1024 * 1024)
 #define DEFAULT_PREFETCH_RADIUS  2
 #define FETCH_TIMEOUT_MS         30000
+
+// Forward declaration (defined later in this file)
+static uint8_t *fetch_via_binary_protocol(const vol_mirror *m, int level,
+                                           const int64_t *coords, int ndim,
+                                           size_t *out_sz);
 
 // ---------------------------------------------------------------------------
 // vol_mirror struct
@@ -127,7 +134,18 @@ static uint8_t *fetch_and_cache(vol_mirror *m, int level,
   uint8_t *raw = NULL;
   size_t   rsz = 0;
 
-  if (is_remote_url(m->cfg.remote_url)) {
+  if (m->remote_is_volt_server) {
+    // use efficient binary protocol — chunks arrive already in native encoding
+    raw = fetch_via_binary_protocol(m, level, coords, ndim, &rsz);
+    if (!raw || rsz == 0) {
+      free(raw);
+      pthread_mutex_lock(&m->lock);
+      m->cache_misses++;
+      pthread_mutex_unlock(&m->lock);
+      return NULL;
+    }
+    write_chunk_to_disk(disk_path, raw, rsz);
+  } else if (is_remote_url(m->cfg.remote_url)) {
     http_response *resp = http_get(url, FETCH_TIMEOUT_MS);
     if (!resp || resp->status_code != 200 || !resp->data || resp->size == 0) {
       http_response_free(resp);
@@ -598,6 +616,14 @@ bool vol_mirror_rechunk(vol_mirror *m, const int64_t *new_chunk_shape) {
 
 bool vol_mirror_recompress(vol_mirror *m) {
   if (!m) return false;
+
+  // Skip transcoding if the remote is already compress4d, unless forced.
+  if (m->remote_is_c4d && !m->cfg.force_recompress) {
+    LOG_INFO("vol_mirror: remote is already compress4d — skipping recompress"
+             " (set force_recompress=true to override)");
+    return true;
+  }
+
   volume *src = m->local_vol ? m->local_vol : m->remote_vol;
   if (!src) return false;
 

@@ -79,13 +79,11 @@ static void *tile_worker(void *arg_ptr) {
   free(arg_ptr);
 
   if (atomic_load(&job->cancelled)) {
-    free(job);
-    return NULL;
+    return NULL;  // renderer owns job lifetime; do not free here
   }
 
   uint8_t *pixels = malloc((size_t)TILE_PX * TILE_PX * 4);
   if (!pixels) {
-    free(job);
     return NULL;
   }
   fill_test_pattern(pixels, job->key);
@@ -93,14 +91,12 @@ static void *tile_worker(void *arg_ptr) {
   // Check cancellation again after (potentially expensive) render.
   if (atomic_load(&job->cancelled)) {
     free(pixels);
-    free(job);
     return NULL;
   }
 
   completed_node *node = malloc(sizeof(*node));
   if (!node) {
     free(pixels);
-    free(job);
     return NULL;
   }
   node->result.key    = job->key;
@@ -114,7 +110,6 @@ static void *tile_worker(void *arg_ptr) {
   renderer->completed_count++;
   pthread_mutex_unlock(&renderer->completed_mu);
 
-  free(job);
   return NULL;
 }
 
@@ -157,8 +152,10 @@ void tile_renderer_free(tile_renderer *r) {
   threadpool_drain(r->pool, 500);
   threadpool_free(r->pool);
 
-  // Free any remaining pending job structs (workers that saw cancelled=true
-  // already freed their own job pointer).
+  // Now safe to free all job structs — no workers are running.
+  // Workers do NOT free jobs; the renderer owns all job lifetimes.
+  for (int i = 0; i < r->pending_len; i++)
+    free(r->pending[i]);
   free(r->pending);
 
   // Drain remaining completed results.

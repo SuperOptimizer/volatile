@@ -16,10 +16,13 @@ int cmd_mirror(int argc, char **argv) {
     puts("");
     puts("  Cache a remote Zarr volume to local disk.");
     puts("");
-    puts("  --cache-dir DIR      Local cache root (default ~/.cache/volatile/)");
-    puts("  --level N            Cache only this level (default: all levels)");
-    puts("  --rechunk Z,Y,X      Rechunk cached data to new chunk shape");
-    puts("  --compress4d         Recompress cached data with compress4d");
+    puts("  --cache-dir DIR        Local cache root (default ~/.cache/volatile/)");
+    puts("  --level N              Cache only this level (default: all levels)");
+    puts("  --rechunk Z,Y,X        Rechunk cached data to new chunk shape");
+    puts("  --compress4d           Recompress cached data with compress4d");
+    puts("                         (skipped automatically if remote is already compress4d)");
+    puts("  --force-recompress     Recompress even if remote is already compress4d");
+    puts("  --no-binary-protocol   Use HTTP only, skip volatile TCP protocol probe");
     return argc < 1 ? 1 : 0;
   }
 

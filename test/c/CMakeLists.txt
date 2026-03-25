@@ -16,6 +16,7 @@ set(_core_only_tests
 # core + render
 set(_render_tests
   test_cmap test_composite test_overlay test_camera test_tile
+  test_integration
 )
 
 # core + gpu
@@ -25,7 +26,12 @@ set(_gpu_tests
 
 # core + server
 set(_server_tests
-  test_db test_protocol test_srv test_collab test_review
+  test_db test_protocol test_srv test_review
+)
+
+# core + server + render (collab uses overlay_list)
+set(_server_render_tests
+  test_collab
 )
 
 # core + server + render + cli
@@ -67,6 +73,8 @@ foreach(_src IN LISTS _test_sources)
       target_link_libraries(${_name} PRIVATE volatile_core volatile_gpu)
     elseif(_name IN_LIST _server_tests)
       target_link_libraries(${_name} PRIVATE volatile_core volatile_server)
+    elseif(_name IN_LIST _server_render_tests)
+      target_link_libraries(${_name} PRIVATE volatile_core volatile_server volatile_render)
     elseif(_name IN_LIST _cli_tests)
       target_link_libraries(${_name} PRIVATE volatile_cli)
     else()
@@ -75,6 +83,11 @@ foreach(_src IN LISTS _test_sources)
     endif()
 
     add_test(NAME ${_name} COMMAND ${_name})
-    set_tests_properties(${_name} PROPERTIES TIMEOUT 10)
+    # GPU compute tests invoke glslc at runtime; give them more time.
+    if(_name STREQUAL "test_gpu_compute")
+      set_tests_properties(${_name} PROPERTIES TIMEOUT 60)
+    else()
+      set_tests_properties(${_name} PROPERTIES TIMEOUT 10)
+    endif()
   endif()
 endforeach()
