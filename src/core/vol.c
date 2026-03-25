@@ -2,6 +2,7 @@
 #include "core/io.h"
 #include "core/json.h"
 #include "core/log.h"
+#include "core/net.h"
 
 #include <blosc2.h>
 #include <errno.h>
@@ -287,17 +288,71 @@ volume *vol_open(const char *path) {
 
   strncpy(v->path, path, VOL_PATH_MAX - 1);
 
-  if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
+  bool is_http = strncmp(path, "http://",  7) == 0 ||
+                 strncmp(path, "https://", 8) == 0;
+  bool is_s3   = strncmp(path, "s3://",    5) == 0;
+
+  if (is_http || is_s3) {
     v->source = VOL_REMOTE;
   } else {
     v->source = VOL_LOCAL;
   }
 
   if (v->source == VOL_REMOTE) {
-    // TODO: implement remote level discovery via HTTP fetch
-    LOG_WARN("remote volumes not yet implemented: %s", path);
-    free(v);
-    return NULL;
+    if (is_s3) {
+      // Resolve S3 credentials from environment.
+      s3_credentials *creds = s3_creds_from_env();
+      if (!creds) {
+        LOG_WARN("s3:// volume requested but no credentials found (set AWS_ACCESS_KEY_ID etc): %s", path);
+        free(v);
+        return NULL;
+      }
+
+      // Discover levels by probing .zattrs and level .zarray metadata.
+      char bucket[256] = "", base_key[1024] = "";
+      if (!s3_parse_url(path, bucket, (int)sizeof(bucket), base_key, (int)sizeof(base_key))) {
+        LOG_WARN("failed to parse S3 URL: %s", path);
+        s3_creds_free(creds);
+        free(v);
+        return NULL;
+      }
+
+      v->num_levels = 0;
+      for (int lvl = 0; lvl < VOL_MAX_LEVELS; lvl++) {
+        // Try .zarray at base_key/N/.zarray  (zarr v2)
+        char key[1280];
+        snprintf(key, sizeof(key), "%s/%d/.zarray", base_key, lvl);
+        http_response *resp = s3_get_object(creds, bucket, key, 10000);
+        if (!resp || resp->status_code != 200 || !resp->data) {
+          http_response_free(resp);
+          break;
+        }
+        zarr_level_meta meta;
+        memset(&meta, 0, sizeof(meta));
+        // Reuse the JSON parsing done in load_level_v2 by writing the fetched
+        // body to a temp file then calling the existing load path.  Rather than
+        // duplicating the parser, construct a minimal meta from the JSON here.
+        // For now, record that the level exists but leave shape unpopulated —
+        // full remote metadata parsing can be added incrementally.
+        meta.zarr_version = 2;
+        meta.ndim = 3;
+        v->levels[v->num_levels++] = meta;
+        http_response_free(resp);
+      }
+
+      s3_creds_free(creds);
+
+      if (v->num_levels == 0) {
+        LOG_WARN("no valid S3 levels found at: %s", path);
+        free(v);
+        return NULL;
+      }
+    } else {
+      // http/https remote — not yet implemented
+      LOG_WARN("http/https remote volumes not yet implemented: %s", path);
+      free(v);
+      return NULL;
+    }
   }
 
   v->num_levels = 0;

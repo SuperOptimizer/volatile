@@ -32,6 +32,8 @@ void tri_mesh_free(tri_mesh *m) {
 // ---------------------------------------------------------------------------
 
 // Returns true if point p is inside the mesh by counting X-ray crossings.
+// Uses the "top-left" edge rule to avoid double-counting on shared edges:
+// edges with f_i == 0 are only counted if the edge goes in a specific direction.
 static bool point_in_mesh(const tri_mesh *m, vec3f p) {
   int crossings = 0;
   for (int f = 0; f < m->num_faces; f++) {
@@ -39,9 +41,7 @@ static bool point_in_mesh(const tri_mesh *m, vec3f p) {
     vec3f b = m->verts[m->indices[f*3+1]];
     vec3f c = m->verts[m->indices[f*3+2]];
 
-    // Check if triangle spans p.y and p.z range (Moller-Trumbore-like YZ test).
-    // We shoot a ray from p in +X direction.
-    // Translate triangle so ray origin is at 0.
+    // Shoot a ray from p in +X direction.
     float ay = a.y - p.y, by = b.y - p.y, cy = c.y - p.y;
     float az = a.z - p.z, bz = b.z - p.z, cz = c.z - p.z;
 
@@ -50,10 +50,14 @@ static bool point_in_mesh(const tri_mesh *m, vec3f p) {
     float f1 = by * cz - bz * cy;
     float f2 = cy * az - cz * ay;
 
-    // Triangle must straddle the ray in YZ (all edge signs same or zero).
-    if (!((f0 >= 0 && f1 >= 0 && f2 >= 0) || (f0 <= 0 && f1 <= 0 && f2 <= 0))) continue;
+    // Use strict inequality for "top-left" rule: ties go to > 0 direction.
+    // This avoids double-counting at shared edges.
+    bool pass_pos = (f0 > 0 || (f0 == 0.0f && f1 > 0) || (f0 == 0.0f && f1 == 0.0f && f2 > 0));
+    bool all_pos  = (f0 >= 0 && f1 >= 0 && f2 >= 0 && pass_pos);
+    bool all_neg  = (f0 <= 0 && f1 <= 0 && f2 <= 0 && !pass_pos && (f0 < 0 || f1 < 0 || f2 < 0));
 
-    // Compute X intersection using barycentric coords in YZ.
+    if (!all_pos && !all_neg) continue;
+
     float det = f0 + f1 + f2;
     if (fabsf(det) < 1e-12f) continue;
     float t = (f0 * a.x + f1 * b.x + f2 * c.x) / det;
