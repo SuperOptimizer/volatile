@@ -10,23 +10,42 @@
 // ---------------------------------------------------------------------------
 #define SC_A       4
 #define SC_B       5
+#define SC_C       6
 #define SC_D       7
+#define SC_E       8
+#define SC_F       9
+#define SC_G      10
+#define SC_J      13
 #define SC_L      15
+#define SC_M      16
+#define SC_N      17
+#define SC_P      19
+#define SC_Q      20
+#define SC_R      21
 #define SC_S      22
+#define SC_T      23
 #define SC_W      26
 #define SC_Y      28
 #define SC_Z      29
+#define SC_1      30
+#define SC_2      31
+#define SC_3      32
+#define SC_4      33
+#define SC_5      34
+#define SC_6      35
+#define SC_LBRACKET  47
+#define SC_RBRACKET  48
 #define SC_MINUS  45
 #define SC_EQUALS 46
 #define SC_COMMA  54
 #define SC_PERIOD 55
+#define SC_SPACE  44
+#define SC_ESC    41
 #define SC_F11    68
 #define SC_RIGHT  79
 #define SC_LEFT   80
 #define SC_DOWN   81
 #define SC_UP     82
-#define SC_G      10
-#define SC_P      19
 
 // SDL3 modifier masks (SDL_KMOD_LCTRL | SDL_KMOD_RCTRL combined = 0x00C0)
 #define MOD_NONE  0x0000
@@ -51,33 +70,72 @@ struct keybind_map {
 // ---------------------------------------------------------------------------
 
 static void set_defaults(keybind_map *m) {
-  // Pan: WASD and arrow keys — store primary binding per action
-  m->bindings[ACTION_PAN_LEFT]  = (binding){ SC_A,      MOD_NONE };
-  m->bindings[ACTION_PAN_RIGHT] = (binding){ SC_D,      MOD_NONE };
-  m->bindings[ACTION_PAN_UP]    = (binding){ SC_W,      MOD_NONE };
-  m->bindings[ACTION_PAN_DOWN]  = (binding){ SC_S,      MOD_NONE };
+  // Navigation: arrow keys pan; A/D also pan (WASD compat, tests require A=pan_left)
+  m->bindings[ACTION_PAN_LEFT]         = (binding){ SC_A,      MOD_NONE  };
+  m->bindings[ACTION_PAN_RIGHT]        = (binding){ SC_D,      MOD_NONE  };
+  m->bindings[ACTION_PAN_UP]           = (binding){ SC_W,      MOD_NONE  };
+  m->bindings[ACTION_PAN_DOWN]         = (binding){ SC_S,      MOD_NONE  };
+  m->bindings[ACTION_CENTER_ON_CURSOR] = (binding){ SC_R,      MOD_NONE  };
+  m->bindings[ACTION_FOCUS_BACK]       = (binding){ SC_F,      MOD_NONE  };
+  m->bindings[ACTION_FOCUS_FORWARD]    = (binding){ SC_F,      MOD_CTRL  };
+  m->bindings[ACTION_RESET_VIEW]       = (binding){ SC_M,      MOD_NONE  };
 
-  m->bindings[ACTION_ZOOM_IN]   = (binding){ SC_EQUALS, MOD_NONE };  // + / =
-  m->bindings[ACTION_ZOOM_OUT]  = (binding){ SC_MINUS,  MOD_NONE };
+  // Zoom: = in, - out (tests require MOD_NONE)
+  m->bindings[ACTION_ZOOM_IN]          = (binding){ SC_EQUALS, MOD_NONE  };
+  m->bindings[ACTION_ZOOM_OUT]         = (binding){ SC_MINUS,  MOD_NONE  };
 
-  m->bindings[ACTION_SLICE_NEXT] = (binding){ SC_PERIOD, MOD_NONE };  // .
-  m->bindings[ACTION_SLICE_PREV] = (binding){ SC_COMMA,  MOD_NONE };  // ,
+  // Slices: . next, , prev (tests require MOD_NONE)
+  m->bindings[ACTION_SLICE_NEXT]       = (binding){ SC_PERIOD, MOD_NONE  };
+  m->bindings[ACTION_SLICE_PREV]       = (binding){ SC_COMMA,  MOD_NONE  };
 
-  m->bindings[ACTION_TOOL_BRUSH]    = (binding){ SC_B, MOD_NONE };
-  m->bindings[ACTION_TOOL_LINE]     = (binding){ SC_L, MOD_NONE };
-  m->bindings[ACTION_TOOL_PUSHPULL] = (binding){ SC_P, MOD_NONE };
+  // Segments
+  m->bindings[ACTION_SEG_NEXT]         = (binding){ SC_RBRACKET, MOD_NONE };
+  m->bindings[ACTION_SEG_PREV]         = (binding){ SC_LBRACKET, MOD_NONE };
 
-  m->bindings[ACTION_UNDO] = (binding){ SC_Z, MOD_CTRL };
-  m->bindings[ACTION_REDO] = (binding){ SC_Y, MOD_CTRL };
+  // Editing
+  m->bindings[ACTION_UNDO]             = (binding){ SC_Z,      MOD_CTRL  };
+  m->bindings[ACTION_REDO]             = (binding){ SC_Y,      MOD_CTRL  };
+  m->bindings[ACTION_LINE_DRAW]        = (binding){ SC_S,      MOD_NONE  };
+  m->bindings[ACTION_CORRECTION_MODE]  = (binding){ SC_T,      MOD_NONE  };
+  m->bindings[ACTION_EDIT_MODE]        = (binding){ SC_T,      MOD_SHIFT };
+  m->bindings[ACTION_CANCEL]           = (binding){ SC_ESC,    MOD_NONE  };
 
-  m->bindings[ACTION_FOCUS_NEXT] = (binding){ SC_RIGHT, MOD_NONE };
-  m->bindings[ACTION_FOCUS_PREV] = (binding){ SC_LEFT,  MOD_NONE };
+  // Approval
+  m->bindings[ACTION_PAINT]            = (binding){ SC_B,      MOD_NONE  };
+  m->bindings[ACTION_UNPAINT]          = (binding){ SC_N,      MOD_NONE  };
+  m->bindings[ACTION_UNDO_MASK]        = (binding){ SC_B,      MOD_CTRL  };
 
-  m->bindings[ACTION_TOGGLE_OVERLAY]      = (binding){ SC_F11, MOD_NONE };
-  m->bindings[ACTION_TOGGLE_SEGMENTATION] = (binding){ SC_G,   MOD_CTRL };  // Ctrl+G
+  // Growth
+  m->bindings[ACTION_GROW_ALL]         = (binding){ SC_G,      MOD_CTRL  };
+  m->bindings[ACTION_GROW_LEFT]        = (binding){ SC_1,      MOD_NONE  };
+  m->bindings[ACTION_GROW_UP]          = (binding){ SC_2,      MOD_NONE  };
+  m->bindings[ACTION_GROW_DOWN]        = (binding){ SC_3,      MOD_NONE  };
+  m->bindings[ACTION_GROW_RIGHT]       = (binding){ SC_4,      MOD_NONE  };
+  m->bindings[ACTION_GROW_ALL_DIR]     = (binding){ SC_5,      MOD_NONE  };
+  m->bindings[ACTION_GROW_ONE]         = (binding){ SC_6,      MOD_NONE  };
 
-  m->bindings[ACTION_SAVE]       = (binding){ SC_S,   MOD_CTRL };
-  m->bindings[ACTION_FULLSCREEN] = (binding){ SC_F11, MOD_NONE };
+  // Push/Pull: A/D taken by pan (WASD); bind push/pull to arrow+shift
+  m->bindings[ACTION_PUSH]             = (binding){ SC_LEFT,   MOD_SHIFT };
+  m->bindings[ACTION_PULL]             = (binding){ SC_RIGHT,  MOD_SHIFT };
+  m->bindings[ACTION_RADIUS_SMALLER]   = (binding){ SC_Q,      MOD_NONE  };
+  m->bindings[ACTION_RADIUS_BIGGER]    = (binding){ SC_E,      MOD_NONE  };
+
+  // View
+  m->bindings[ACTION_COMPOSITE]        = (binding){ SC_C,      MOD_NONE  };
+  m->bindings[ACTION_TOGGLE_OVERLAY]   = (binding){ SC_SPACE,  MOD_NONE  };
+  m->bindings[ACTION_RAW_POINTS]       = (binding){ SC_P,      MOD_NONE  };
+  m->bindings[ACTION_SLICE_PLANES]     = (binding){ SC_J,      MOD_CTRL  };
+  m->bindings[ACTION_TOGGLE_NORMALS]   = (binding){ SC_N,      MOD_CTRL  };
+
+  // Legacy / misc
+  m->bindings[ACTION_TOOL_BRUSH]           = (binding){ SC_B,   MOD_NONE  };
+  m->bindings[ACTION_TOOL_LINE]            = (binding){ SC_L,   MOD_NONE  };
+  m->bindings[ACTION_TOOL_PUSHPULL]        = (binding){ SC_P,   MOD_NONE  };
+  m->bindings[ACTION_FOCUS_NEXT]           = (binding){ SC_RIGHT, MOD_NONE };
+  m->bindings[ACTION_FOCUS_PREV]           = (binding){ SC_LEFT,  MOD_NONE };
+  m->bindings[ACTION_TOGGLE_SEGMENTATION]  = (binding){ SC_G,   MOD_CTRL  };
+  m->bindings[ACTION_SAVE]                 = (binding){ SC_S,   MOD_CTRL  };
+  m->bindings[ACTION_FULLSCREEN]           = (binding){ SC_F11, MOD_NONE  };
 }
 
 // ---------------------------------------------------------------------------
@@ -124,26 +182,54 @@ int keybind_lookup(const keybind_map *m, int sdl_scancode, int modifiers) {
 
 const char *keybind_action_name(action_id a) {
   switch (a) {
-    case ACTION_PAN_LEFT:             return "pan_left";
-    case ACTION_PAN_RIGHT:            return "pan_right";
-    case ACTION_PAN_UP:               return "pan_up";
-    case ACTION_PAN_DOWN:             return "pan_down";
-    case ACTION_ZOOM_IN:              return "zoom_in";
-    case ACTION_ZOOM_OUT:             return "zoom_out";
-    case ACTION_SLICE_NEXT:           return "slice_next";
-    case ACTION_SLICE_PREV:           return "slice_prev";
-    case ACTION_TOOL_BRUSH:           return "tool_brush";
-    case ACTION_TOOL_LINE:            return "tool_line";
-    case ACTION_TOOL_PUSHPULL:        return "tool_pushpull";
-    case ACTION_UNDO:                 return "undo";
-    case ACTION_REDO:                 return "redo";
-    case ACTION_FOCUS_NEXT:           return "focus_next";
-    case ACTION_FOCUS_PREV:           return "focus_prev";
-    case ACTION_TOGGLE_OVERLAY:       return "toggle_overlay";
-    case ACTION_TOGGLE_SEGMENTATION:  return "toggle_segmentation";
-    case ACTION_SAVE:                 return "save";
-    case ACTION_FULLSCREEN:           return "fullscreen";
-    default:                          return "unknown";
+    case ACTION_PAN_LEFT:            return "pan_left";
+    case ACTION_PAN_RIGHT:           return "pan_right";
+    case ACTION_PAN_UP:              return "pan_up";
+    case ACTION_PAN_DOWN:            return "pan_down";
+    case ACTION_CENTER_ON_CURSOR:    return "center_on_cursor";
+    case ACTION_FOCUS_BACK:          return "focus_back";
+    case ACTION_FOCUS_FORWARD:       return "focus_forward";
+    case ACTION_RESET_VIEW:          return "reset_view";
+    case ACTION_ZOOM_IN:             return "zoom_in";
+    case ACTION_ZOOM_OUT:            return "zoom_out";
+    case ACTION_SLICE_NEXT:          return "slice_next";
+    case ACTION_SLICE_PREV:          return "slice_prev";
+    case ACTION_SEG_NEXT:            return "seg_next";
+    case ACTION_SEG_PREV:            return "seg_prev";
+    case ACTION_UNDO:                return "undo";
+    case ACTION_REDO:                return "redo";
+    case ACTION_LINE_DRAW:           return "line_draw";
+    case ACTION_CORRECTION_MODE:     return "correction_mode";
+    case ACTION_EDIT_MODE:           return "edit_mode";
+    case ACTION_CANCEL:              return "cancel";
+    case ACTION_PAINT:               return "paint";
+    case ACTION_UNPAINT:             return "unpaint";
+    case ACTION_UNDO_MASK:           return "undo_mask";
+    case ACTION_GROW_ALL:            return "grow_all";
+    case ACTION_GROW_LEFT:           return "grow_left";
+    case ACTION_GROW_UP:             return "grow_up";
+    case ACTION_GROW_DOWN:           return "grow_down";
+    case ACTION_GROW_RIGHT:          return "grow_right";
+    case ACTION_GROW_ALL_DIR:        return "grow_all_dir";
+    case ACTION_GROW_ONE:            return "grow_one";
+    case ACTION_PUSH:                return "push";
+    case ACTION_PULL:                return "pull";
+    case ACTION_RADIUS_SMALLER:      return "radius_smaller";
+    case ACTION_RADIUS_BIGGER:       return "radius_bigger";
+    case ACTION_COMPOSITE:           return "composite";
+    case ACTION_TOGGLE_OVERLAY:      return "toggle_overlay";
+    case ACTION_RAW_POINTS:          return "raw_points";
+    case ACTION_SLICE_PLANES:        return "slice_planes";
+    case ACTION_TOGGLE_NORMALS:      return "toggle_normals";
+    case ACTION_TOOL_BRUSH:          return "tool_brush";
+    case ACTION_TOOL_LINE:           return "tool_line";
+    case ACTION_TOOL_PUSHPULL:       return "tool_pushpull";
+    case ACTION_FOCUS_NEXT:          return "focus_next";
+    case ACTION_FOCUS_PREV:          return "focus_prev";
+    case ACTION_TOGGLE_SEGMENTATION: return "toggle_segmentation";
+    case ACTION_SAVE:                return "save";
+    case ACTION_FULLSCREEN:          return "fullscreen";
+    default:                         return "unknown";
   }
 }
 

@@ -33,6 +33,9 @@ struct app_state {
   SDL_Renderer  *renderer;
   struct nk_context *nk;
   bool           should_close;
+  int            win_w, win_h;     // logical window size (points)
+  int            pixel_w, pixel_h; // pixel size (for high-DPI)
+  float          dpi_scale;        // pixel_w / win_w
 };
 
 // ---------------------------------------------------------------------------
@@ -74,9 +77,16 @@ app_state_t *app_init(const app_config_t *cfg) {
     return NULL;
   }
 
-  // Bake default font
+  // Query window dimensions (logical + pixel for high-DPI)
+  int lw = width, lh = height;
+  SDL_GetWindowSize(win, &lw, &lh);
+  int pw = lw, ph = lh;
+  SDL_GetWindowSizeInPixels(win, &pw, &ph);
+  float dpi = (lw > 0) ? (float)pw / (float)lw : 1.0f;
+
+  // Bake default font scaled to DPI
   struct nk_font_atlas *atlas = nk_sdl_font_stash_begin(nk);
-  struct nk_font *font = nk_font_atlas_add_default(atlas, 13.0f, NULL);
+  struct nk_font *font = nk_font_atlas_add_default(atlas, 13.0f * dpi, NULL);
   nk_sdl_font_stash_end(nk);
   if (font) nk_style_set_font(nk, &font->handle);
 
@@ -86,6 +96,11 @@ app_state_t *app_init(const app_config_t *cfg) {
   s->renderer     = ren;
   s->nk           = nk;
   s->should_close = false;
+  s->win_w        = lw;
+  s->win_h        = lh;
+  s->pixel_w      = pw;
+  s->pixel_h      = ph;
+  s->dpi_scale    = dpi;
 
   LOG_INFO("GUI init: %s %dx%d", title, width, height);
   return s;
@@ -126,6 +141,19 @@ bool app_begin_frame(app_state_t *s) {
     if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
       s->should_close = true;
     }
+    if (ev.type == SDL_EVENT_WINDOW_RESIZED) {
+      s->win_w = ev.window.data1;
+      s->win_h = ev.window.data2;
+      SDL_GetWindowSizeInPixels(s->window, &s->pixel_w, &s->pixel_h);
+      float new_dpi = (s->win_w > 0) ? (float)s->pixel_w / (float)s->win_w : 1.0f;
+      if (new_dpi != s->dpi_scale) {
+        s->dpi_scale = new_dpi;
+        struct nk_font_atlas *atlas = nk_sdl_font_stash_begin(s->nk);
+        struct nk_font *font = nk_font_atlas_add_default(atlas, 13.0f * new_dpi, NULL);
+        nk_sdl_font_stash_end(s->nk);
+        if (font) nk_style_set_font(s->nk, &font->handle);
+      }
+    }
     nk_sdl_handle_event(s->nk, &ev);
   }
   nk_sdl_update_TextInput(s->nk);
@@ -152,4 +180,12 @@ void app_end_frame(app_state_t *s) {
 // ---------------------------------------------------------------------------
 struct nk_context *app_nk_ctx(app_state_t *s) {
   return s ? s->nk : NULL;
+}
+
+// ---------------------------------------------------------------------------
+// app_get_size
+// ---------------------------------------------------------------------------
+void app_get_size(const app_state_t *s, int *w, int *h) {
+  if (w) *w = s ? s->win_w : 0;
+  if (h) *h = s ? s->win_h : 0;
 }

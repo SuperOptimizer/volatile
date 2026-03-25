@@ -3,6 +3,8 @@
 // Wires all widgets into the SDL3 + Nuklear main loop.
 // ---------------------------------------------------------------------------
 
+#define _POSIX_C_SOURCE 200809L
+
 // Nuklear — NK_IMPLEMENTATION is owned by app.c; use declaration-only here.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -31,6 +33,23 @@
 #include "gui/vol_selector.h"
 #include "gui/window_range.h"
 #include "gui/menubar.h"
+#include "gui/settings_dialog.h"
+#include "gui/about_dialog.h"
+#include "gui/keybinds_dialog.h"
+#include "gui/file_dialog.h"
+#include "gui/seg_panels.h"
+#include "gui/viewer_controls.h"
+#include "gui/draw_panel.h"
+#include "gui/dt_panel.h"
+#include "gui/point_panel.h"
+#include "gui/statusbar.h"
+#include "gui/scalebar.h"
+#include "gui/cred_dialog.h"
+#include "gui/overlay_vol.h"
+#include "gui/vol_info_panel.h"
+#include "gui/tool_runner.h"
+#include "gui/slice_controller.h"
+#include "gui/keybind.h"
 #include "render/tile.h"
 #include "render/camera.h"
 #include "render/overlay.h"
@@ -40,6 +59,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 // ---------------------------------------------------------------------------
 // Log console callback — bridge log_msg -> log_console
@@ -54,37 +74,64 @@ static void console_log_cb(void *ctx, log_level_t level,
 }
 
 // ---------------------------------------------------------------------------
-// Tool state
+// Floating panel state — panels not in the named layout slots
 // ---------------------------------------------------------------------------
 
-typedef enum { TOOL_BRUSH, TOOL_LINE, TOOL_PUSH_PULL } active_tool;
+typedef struct {
+  bool draw_panel_open;
+  bool dt_panel_open;
+  bool point_panel_open;
+  bool viewer_controls_open;
+  bool vol_info_open;
+} float_panels;
 
 // ---------------------------------------------------------------------------
-// Render a panel by pixel rect into a Nuklear canvas image.
-// For now, renders a test-pattern label (real volume render hooks in here).
+// Menubar callback context — bundles all dialog/state pointers
 // ---------------------------------------------------------------------------
 
-static void render_viewer_panel(struct nk_context *ctx,
-                                slice_viewer *v, const char *label) {
-  nk_layout_row_dynamic(ctx, 20, 1);
-  nk_label(ctx, label, NK_TEXT_LEFT);
-  // NOTE: real integration would blit viewer_render() pixels via
-  //       nk_image() once SDL3 texture upload is wired.
-  nk_layout_row_dynamic(ctx, 20, 1);
-  char info[64];
-  snprintf(info, sizeof(info), "axis=%d  slice=%.1f",
-           viewer_get_axis(v), viewer_current_slice(v));
-  nk_label(ctx, info, NK_TEXT_LEFT);
+typedef struct {
+  settings_dialog  *settings_dlg;
+  about_dialog     *about_dlg;
+  keybinds_dialog  *keybinds_dlg;
+  file_dialog      *file_dlg_volpkg;
+  file_dialog      *file_dlg_zarr;
+  file_dialog      *file_dlg_remote;
+  app_state_t      *app;
+  float_panels     *panels;
+  app_layout       *layout;
+} menu_ctx;
+
+static void cb_settings(void *ctx)    { settings_dialog_show(((menu_ctx*)ctx)->settings_dlg); }
+static void cb_about(void *ctx)       { about_dialog_show(((menu_ctx*)ctx)->about_dlg); }
+static void cb_keybinds(void *ctx)    { keybinds_dialog_show(((menu_ctx*)ctx)->keybinds_dlg); }
+static void cb_open_volpkg(void *ctx) { file_dialog_show(((menu_ctx*)ctx)->file_dlg_volpkg, NULL); }
+static void cb_open_zarr(void *ctx)   { file_dialog_show(((menu_ctx*)ctx)->file_dlg_zarr, NULL); }
+static void cb_open_remote(void *ctx) { file_dialog_show(((menu_ctx*)ctx)->file_dlg_remote, NULL); }
+
+static void cb_toggle_volumes(void *ctx) {
+  layout_toggle_panel(((menu_ctx*)ctx)->layout, PANEL_VOLUME_BROWSER);
+}
+static void cb_toggle_segmentation(void *ctx) {
+  layout_toggle_panel(((menu_ctx*)ctx)->layout, PANEL_SEGMENTATION);
+}
+static void cb_toggle_drawing(void *ctx) {
+  ((menu_ctx*)ctx)->panels->draw_panel_open ^= true;
+}
+static void cb_toggle_dt(void *ctx) {
+  ((menu_ctx*)ctx)->panels->dt_panel_open ^= true;
+}
+static void cb_toggle_viewer_controls(void *ctx) {
+  ((menu_ctx*)ctx)->panels->viewer_controls_open ^= true;
+}
+static void cb_toggle_point_collection(void *ctx) {
+  ((menu_ctx*)ctx)->panels->point_panel_open ^= true;
+}
+static void cb_show_console(void *ctx) {
+  layout_toggle_panel(((menu_ctx*)ctx)->layout, PANEL_CONSOLE);
 }
 
-static void render_3d_panel(struct nk_context *ctx, viewer3d *v) {
-  nk_layout_row_dynamic(ctx, 20, 1);
-  nk_label(ctx, "3D Viewer (CPU raycast)", NK_TEXT_LEFT);
-  (void)v;
-}
-
 // ---------------------------------------------------------------------------
-// Helper: open a panel using layout geometry
+// Render helpers
 // ---------------------------------------------------------------------------
 
 static bool panel_begin(struct nk_context *ctx, const app_layout *layout,
@@ -94,6 +141,37 @@ static bool panel_begin(struct nk_context *ctx, const app_layout *layout,
   float px = r.x * (float)win_w, py = r.y * (float)win_h;
   float pw = r.w * (float)win_w, ph = r.h * (float)win_h;
   return nk_begin(ctx, r.title, nk_rect(px, py, pw, ph), flags) != 0;
+}
+
+static void render_viewer_panel(struct nk_context *ctx,
+                                slice_viewer *v, const char *label,
+                                scalebar *sb) {
+  nk_layout_row_dynamic(ctx, 20, 1);
+  nk_label(ctx, label, NK_TEXT_LEFT);
+  nk_layout_row_dynamic(ctx, 20, 1);
+  char info[64];
+  snprintf(info, sizeof(info), "axis=%d  slice=%.1f",
+           viewer_get_axis(v), viewer_current_slice(v));
+  nk_label(ctx, info, NK_TEXT_LEFT);
+  // Scale bar (zoom=1 until real pixel pipeline is wired)
+  nk_layout_row_dynamic(ctx, 20, 1);
+  scalebar_render(sb, ctx, 1.0f, 120);
+}
+
+static void render_3d_panel(struct nk_context *ctx, viewer3d *v) {
+  nk_layout_row_dynamic(ctx, 20, 1);
+  nk_label(ctx, "3D Viewer (CPU raycast)", NK_TEXT_LEFT);
+  (void)v;
+}
+
+// Simple elapsed-ms helper using CLOCK_MONOTONIC
+static float elapsed_ms(struct timespec *prev) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  float dt = (float)(now.tv_sec  - prev->tv_sec)  * 1000.0f
+           + (float)(now.tv_nsec - prev->tv_nsec) / 1e6f;
+  *prev = now;
+  return dt;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +195,8 @@ int main(int argc, char **argv) {
   if (!app) { log_set_callback(NULL, NULL); log_console_free(g_console); return 1; }
 
   const int WIN_W = 1600, WIN_H = 900;
+  const int MENUBAR_H  = 30;
+  const int STATUSBAR_H = 24;
 
   // --- Layout ---
   app_layout *layout = layout_new_default();
@@ -147,6 +227,11 @@ int main(int argc, char **argv) {
   };
   viewer3d *v3d = viewer3d_new(v3cfg);
 
+  // --- Slice controllers (debounce) ---
+  slice_controller *sc_xy = slice_controller_new(vxy);
+  slice_controller *sc_xz = slice_controller_new(vxz);
+  slice_controller *sc_yz = slice_controller_new(vyz);
+
   // --- Crosshair sync ---
   crosshair_sync *xhair = crosshair_sync_new();
   crosshair_sync_add_viewer(xhair, vxy);
@@ -161,58 +246,130 @@ int main(int argc, char **argv) {
   viewer_set_overlays(vxz, ov_xz);
   viewer_set_overlays(vyz, ov_yz);
 
+  // --- Scale bars (one per slice viewer; default voxel size 65 nm) ---
+  scalebar *sb_xy = scalebar_new(0.065f);
+  scalebar *sb_xz = scalebar_new(0.065f);
+  scalebar *sb_yz = scalebar_new(0.065f);
+
   // --- Surface panel ---
   surface_panel *surf_panel = surface_panel_new();
-  // Add placeholder entries so the panel isn't empty
   surface_panel_add(surf_panel, &(surface_entry){
     .id = 1, .name = "Segment 1", .visible = true, .approved = false,
     .area_vx2 = 12500.0f
   });
 
+  // --- Segmentation panels (replaces basic toolbar in PANEL_SEGMENTATION) ---
+  seg_panels *segp = seg_panels_new();
+
+  // --- Viewer controls ---
+  viewer_controls *vctrl = viewer_controls_new();
+
+  // --- Overlay volume (composited in viewer panels) ---
+  overlay_volume *ovol = overlay_volume_new();
+
+  // --- Draw panel ---
+  draw_panel *drawp = draw_panel_new(512, 512);
+
+  // --- Distance transform panel ---
+  dt_panel *dtp = dt_panel_new();
+
+  // --- Point collection panel ---
+  point_panel *pointp = point_panel_new();
+
+  // --- Volume info panel ---
+  vol_info_panel *vol_info = vol_info_panel_new();
+
+  // --- Status bar ---
+  statusbar *sbar = statusbar_new();
+
   // --- Settings ---
-  settings *prefs = settings_open(NULL);  // global-only, no project dir
+  settings *prefs = settings_open(NULL);
 
-  // --- Toolbar ---
-  active_tool current_tool = TOOL_BRUSH;
-  toolbar *tools = toolbar_new();
+  // --- Keybinds ---
+  keybind_map *binds = keybind_new();
 
-  void *tool_ptrs[3] = {
-    (void *)((uintptr_t)TOOL_BRUSH),
-    (void *)((uintptr_t)TOOL_LINE),
-    (void *)((uintptr_t)TOOL_PUSH_PULL),
-  };
-  // NOTE: callbacks update current_tool via a small lambda pattern
-  // Since C doesn't have closures, we pass &current_tool as ctx
-  // and use a single generic setter callback
-  toolbar_add_button(tools, "Brush", NULL,
-    (toolbar_action_fn)(void(*)(void*))NULL, tool_ptrs[0]);
-  toolbar_add_button(tools, "Line", NULL,
-    (toolbar_action_fn)(void(*)(void*))NULL, tool_ptrs[1]);
-  toolbar_add_separator(tools);
-  toolbar_add_button(tools, "Push-Pull", NULL,
-    (toolbar_action_fn)(void(*)(void*))NULL, tool_ptrs[2]);
+  // --- Dialogs ---
+  settings_dialog  *settings_dlg = settings_dialog_new(prefs);
+  about_dialog     *about_dlg    = about_dialog_new();
+  keybinds_dialog  *keybinds_dlg = keybinds_dialog_new(binds);
+  file_dialog      *fdlg_volpkg  = file_dialog_new("Open volpkg", "*.volpkg");
+  file_dialog      *fdlg_zarr    = file_dialog_new("Open Local Zarr", "*.zarr");
+  file_dialog      *fdlg_remote  = file_dialog_new("Open Remote Volume", "*");
+  cred_dialog      *cred_dlg     = cred_dialog_new();
+
+  file_dialog_add_bookmark(fdlg_volpkg, "Home",  getenv("HOME") ? getenv("HOME") : "/");
+  file_dialog_add_bookmark(fdlg_volpkg, "Data",  "/data");
+  file_dialog_add_bookmark(fdlg_zarr,   "Home",  getenv("HOME") ? getenv("HOME") : "/");
 
   // --- Volume selector ---
   vol_selector *volsel = vol_selector_new();
   vol_selector_add(volsel, "(no volume)", "");
-  // Argv volumes
-  for (int i = 1; i < argc; i++) {
+  for (int i = 1; i < argc; i++)
     vol_selector_add(volsel, argv[i], argv[i]);
-  }
 
   // --- Window/level widget ---
   window_range_state wr;
   window_range_init(&wr);
 
+  // --- Toolbar (kept for reference; seg_panels is primary) ---
+  toolbar *tools = toolbar_new();
+  toolbar_add_button(tools, "Brush",     NULL, NULL, NULL);
+  toolbar_add_button(tools, "Line",      NULL, NULL, NULL);
+  toolbar_add_separator(tools);
+  toolbar_add_button(tools, "Push-Pull", NULL, NULL, NULL);
+
+  // --- Tool runner (CLI integration) ---
+  tool_runner *runner = tool_runner_new();
+
   // --- Menu bar ---
   menubar *mbar = menubar_new();
-  // Recent files from argv (add in reverse so first arg ends up at top)
   for (int i = argc - 1; i >= 1; i--)
     menubar_add_recent(mbar, argv[i]);
 
-  // --- Loaded volume (populated when user selects one) ---
+  // --- Floating panel visibility state ---
+  float_panels flt = {
+    .draw_panel_open       = false,
+    .dt_panel_open         = false,
+    .point_panel_open      = false,
+    .viewer_controls_open  = false,
+    .vol_info_open         = false,
+  };
+
+  // --- Menu callback context ---
+  menu_ctx mctx = {
+    .settings_dlg    = settings_dlg,
+    .about_dlg       = about_dlg,
+    .keybinds_dlg    = keybinds_dlg,
+    .file_dlg_volpkg = fdlg_volpkg,
+    .file_dlg_zarr   = fdlg_zarr,
+    .file_dlg_remote = fdlg_remote,
+    .app             = app,
+    .panels          = &flt,
+    .layout          = layout,
+  };
+
+  // Wire menubar callbacks
+  menubar_on_open_volpkg(mbar,                cb_open_volpkg,          &mctx);
+  menubar_on_open_zarr(mbar,                  cb_open_zarr,            &mctx);
+  menubar_on_open_remote(mbar,                cb_open_remote,          &mctx);
+  menubar_on_settings(mbar,                   cb_settings,             &mctx);
+  menubar_on_about(mbar,                      cb_about,                &mctx);
+  menubar_on_keybinds(mbar,                   cb_keybinds,             &mctx);
+  menubar_on_toggle_volumes(mbar,             cb_toggle_volumes,       &mctx);
+  menubar_on_toggle_segmentation(mbar,        cb_toggle_segmentation,  &mctx);
+  menubar_on_toggle_drawing(mbar,             cb_toggle_drawing,       &mctx);
+  menubar_on_toggle_distance_transform(mbar,  cb_toggle_dt,            &mctx);
+  menubar_on_toggle_viewer_controls(mbar,     cb_toggle_viewer_controls,&mctx);
+  menubar_on_toggle_point_collection(mbar,    cb_toggle_point_collection,&mctx);
+  menubar_on_show_console(mbar,               cb_show_console,         &mctx);
+
+  // --- Loaded volume ---
   volume *vol = NULL;
   int last_vol_sel = 0;
+
+  // --- Frame timing ---
+  struct timespec frame_ts;
+  clock_gettime(CLOCK_MONOTONIC, &frame_ts);
 
   LOG_INFO("GUI ready — entering main loop");
 
@@ -220,27 +377,54 @@ int main(int argc, char **argv) {
   // Main loop
   // ---------------------------------------------------------------------------
   nk_flags panel_flags = NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR;
+  nk_flags float_flags = NK_WINDOW_BORDER | NK_WINDOW_TITLE
+                       | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE | NK_WINDOW_CLOSABLE;
 
   while (!app_should_close(app)) {
-    // --- Event pump + Nuklear input ---
+    float dt_ms = elapsed_ms(&frame_ts);
+
+    // 1. Event pump + Nuklear input
     app_begin_frame(app);
     struct nk_context *ctx = app_nk_ctx(app);
 
-    // --- Menu bar (thin full-width window at top of screen) ---
+    // 2. Menu bar (full-width, 30 px, y=0)
     if (nk_begin(ctx, "##menubar",
-                 nk_rect(0, 0, (float)WIN_W, 30),
+                 nk_rect(0, 0, (float)WIN_W, (float)MENUBAR_H),
                  NK_WINDOW_NO_SCROLLBAR)) {
       menubar_render(mbar, ctx);
     }
     nk_end(ctx);
 
-    // --- Volume selector: load volume on change ---
+    // 3. Named layout panels
+    // --- Volume browser (hidden by default; toggled via View menu) ---
     if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, WIN_W, WIN_H, panel_flags)) {
-      // NOTE: PANEL_VOLUME_BROWSER is hidden by default; show via menu later.
-      nk_end(ctx);
+      nk_layout_row_dynamic(ctx, 22, 1);
+      nk_label(ctx, "Volume", NK_TEXT_LEFT);
+      if (vol_selector_render(volsel, ctx)) {
+        int sel = vol_selector_selected(volsel);
+        if (sel != last_vol_sel) {
+          last_vol_sel = sel;
+          const char *path = vol_selector_selected_path(volsel);
+          if (path && path[0] != '\0') {
+            vol_free(vol);
+            vol = vol_open(path);
+            if (vol) {
+              viewer_set_volume(vxy, vol);
+              viewer_set_volume(vxz, vol);
+              viewer_set_volume(vyz, vol);
+              viewer3d_set_volume(v3d, vol);
+              menubar_add_recent(mbar, path);
+              LOG_INFO("Opened volume: %s", path);
+            } else {
+              LOG_WARN("Failed to open volume: %s", path);
+            }
+          }
+        }
+      }
     }
+    nk_end(ctx);
 
-    // --- Side panel: Segmentation tools (toolbar + volume selector + W/L) ---
+    // --- Segmentation panel ---
     if (panel_begin(ctx, layout, PANEL_SEGMENTATION, WIN_W, WIN_H, panel_flags)) {
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Volume", NK_TEXT_LEFT);
@@ -257,6 +441,7 @@ int main(int argc, char **argv) {
               viewer_set_volume(vxz, vol);
               viewer_set_volume(vyz, vol);
               viewer3d_set_volume(v3d, vol);
+              menubar_add_recent(mbar, path);
               LOG_INFO("Opened volume: %s", path);
             } else {
               LOG_WARN("Failed to open volume: %s", path);
@@ -264,35 +449,29 @@ int main(int argc, char **argv) {
           }
         }
       }
-
       nk_layout_row_dynamic(ctx, 4, 1);
       nk_rule_horizontal(ctx, ctx->style.window.border_color, false);
-
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Window / Level", NK_TEXT_LEFT);
       window_range_render(&wr, ctx);
-
       nk_layout_row_dynamic(ctx, 4, 1);
       nk_rule_horizontal(ctx, ctx->style.window.border_color, false);
-
-      nk_layout_row_dynamic(ctx, 22, 1);
-      nk_label(ctx, "Tools", NK_TEXT_LEFT);
-      toolbar_render(tools, ctx);
-      nk_end(ctx);
+      seg_panels_render(segp, ctx, NULL);
     }
+    nk_end(ctx);
 
-    // --- Side panel: Surface tree ---
+    // --- Surface tree ---
     if (panel_begin(ctx, layout, PANEL_SURFACE_TREE, WIN_W, WIN_H, panel_flags)) {
       surface_panel_render(surf_panel, ctx, NULL);
-      nk_end(ctx);
     }
+    nk_end(ctx);
 
     // --- Console ---
     if (panel_begin(ctx, layout, PANEL_CONSOLE, WIN_W, WIN_H,
                     NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
       log_console_render(g_console, ctx, NULL);
-      nk_end(ctx);
     }
+    nk_end(ctx);
 
     // --- Update crosshair overlays ---
     overlay_list_clear(ov_xy);
@@ -304,29 +483,137 @@ int main(int argc, char **argv) {
 
     // --- XY viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_XY, WIN_W, WIN_H, panel_flags)) {
-      render_viewer_panel(ctx, vxy, "XY (axial)");
-      nk_end(ctx);
+      render_viewer_panel(ctx, vxy, "XY (axial)", sb_xy);
     }
+    nk_end(ctx);
 
     // --- XZ viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, WIN_W, WIN_H, panel_flags)) {
-      render_viewer_panel(ctx, vxz, "XZ (coronal)");
-      nk_end(ctx);
+      render_viewer_panel(ctx, vxz, "XZ (coronal)", sb_xz);
     }
+    nk_end(ctx);
 
     // --- YZ viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, WIN_W, WIN_H, panel_flags)) {
-      render_viewer_panel(ctx, vyz, "YZ (sagittal)");
-      nk_end(ctx);
+      render_viewer_panel(ctx, vyz, "YZ (sagittal)", sb_yz);
     }
+    nk_end(ctx);
 
     // --- 3D viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_3D, WIN_W, WIN_H, panel_flags)) {
       render_3d_panel(ctx, v3d);
+    }
+    nk_end(ctx);
+
+    // 4. Floating panels (movable, toggled via View menu)
+
+    // --- Viewer controls ---
+    if (flt.viewer_controls_open) {
+      if (nk_begin(ctx, "Viewer Controls",
+                   nk_rect(1200, 50, 380, 400), float_flags)) {
+        flt.viewer_controls_open = viewer_controls_render(vctrl, ctx, vxy);
+        // overlay volume controls in same panel
+        nk_layout_row_dynamic(ctx, 4, 1);
+        nk_rule_horizontal(ctx, ctx->style.window.border_color, false);
+        overlay_volume_render_controls(ovol, ctx);
+      } else {
+        flt.viewer_controls_open = false;
+      }
       nk_end(ctx);
     }
 
-    // --- Present frame ---
+    // --- Volume info ---
+    if (flt.vol_info_open) {
+      if (nk_begin(ctx, "Volume Info",
+                   nk_rect(20, 50, 320, 300), float_flags)) {
+        vol_info_panel_render(vol_info, ctx, vol, NULL);
+      } else {
+        flt.vol_info_open = false;
+      }
+      nk_end(ctx);
+    }
+
+    // --- Drawing panel ---
+    if (flt.draw_panel_open) {
+      if (nk_begin(ctx, "Drawing",
+                   nk_rect(20, 360, 320, 400), float_flags)) {
+        draw_panel_render(drawp, ctx);
+      } else {
+        flt.draw_panel_open = false;
+      }
+      nk_end(ctx);
+    }
+
+    // --- Distance transform panel ---
+    if (flt.dt_panel_open) {
+      if (nk_begin(ctx, "Distance Transform",
+                   nk_rect(350, 360, 300, 300), float_flags)) {
+        dt_panel_render(dtp, ctx, "Distance Transform");
+      } else {
+        flt.dt_panel_open = false;
+      }
+      nk_end(ctx);
+    }
+
+    // --- Point collection panel ---
+    if (flt.point_panel_open) {
+      if (nk_begin(ctx, "Point Collections",
+                   nk_rect(660, 360, 300, 300), float_flags)) {
+        point_panel_render(pointp, ctx, "Points");
+      } else {
+        flt.point_panel_open = false;
+      }
+      nk_end(ctx);
+    }
+
+    // 5. Dialogs (floating popups)
+    settings_dialog_render(settings_dlg, ctx);
+    about_dialog_render(about_dlg, ctx);
+    keybinds_dialog_render(keybinds_dlg, ctx);
+    file_dialog_render(fdlg_volpkg, ctx);
+    file_dialog_render(fdlg_zarr, ctx);
+    file_dialog_render(fdlg_remote, ctx);
+    cred_dialog_render(cred_dlg, ctx);
+
+    // Handle file dialog commits
+    if (!file_dialog_is_visible(fdlg_volpkg)) {
+      const char *path = file_dialog_get_path(fdlg_volpkg);
+      if (path && path[0] != '\0') {
+        vol_free(vol);
+        vol = vol_open(path);
+        if (vol) {
+          viewer_set_volume(vxy, vol);
+          viewer_set_volume(vxz, vol);
+          viewer_set_volume(vyz, vol);
+          viewer3d_set_volume(v3d, vol);
+          menubar_add_recent(mbar, path);
+          LOG_INFO("Opened volpkg: %s", path);
+        } else {
+          LOG_WARN("Failed to open: %s", path);
+        }
+      }
+    }
+
+    // 6. Status bar (full-width strip at bottom)
+    statusbar_update(sbar, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0,
+                     dt_ms > 0.0f ? 1000.0f / dt_ms : 0.0f, 0);
+    if (nk_begin(ctx, "##statusbar",
+                 nk_rect(0, (float)(WIN_H - STATUSBAR_H),
+                         (float)WIN_W, (float)STATUSBAR_H),
+                 NK_WINDOW_NO_SCROLLBAR)) {
+      statusbar_render(sbar, ctx, STATUSBAR_H);
+    }
+    nk_end(ctx);
+
+    // 7. Tick slice controllers (debounce)
+    slice_controller_tick(sc_xy, dt_ms);
+    slice_controller_tick(sc_xz, dt_ms);
+    slice_controller_tick(sc_yz, dt_ms);
+
+    // 8. Poll tool runner (CLI output)
+    tool_runner_poll(runner);
+
+    // 9. Present frame
     app_end_frame(app);
   }
 
@@ -335,20 +622,43 @@ int main(int argc, char **argv) {
   // ---------------------------------------------------------------------------
   log_set_callback(NULL, NULL);
 
+  tool_runner_free(runner);
   vol_free(vol);
   overlay_list_free(ov_xy);
   overlay_list_free(ov_xz);
   overlay_list_free(ov_yz);
   crosshair_sync_free(xhair);
+  slice_controller_free(sc_xy);
+  slice_controller_free(sc_xz);
+  slice_controller_free(sc_yz);
   viewer_free(vxy);
   viewer_free(vxz);
   viewer_free(vyz);
   viewer3d_free(v3d);
   tile_renderer_free(tiles);
+  scalebar_free(sb_xy);
+  scalebar_free(sb_xz);
+  scalebar_free(sb_yz);
   vol_selector_free(volsel);
   surface_panel_free(surf_panel);
+  seg_panels_free(segp);
+  viewer_controls_free(vctrl);
+  overlay_volume_free(ovol);
+  draw_panel_free(drawp);
+  dt_panel_free(dtp);
+  point_panel_free(pointp);
+  vol_info_panel_free(vol_info);
+  statusbar_free(sbar);
   toolbar_free(tools);
   menubar_free(mbar);
+  settings_dialog_free(settings_dlg);
+  about_dialog_free(about_dlg);
+  keybinds_dialog_free(keybinds_dlg);
+  file_dialog_free(fdlg_volpkg);
+  file_dialog_free(fdlg_zarr);
+  file_dialog_free(fdlg_remote);
+  cred_dialog_free(cred_dlg);
+  keybind_free(binds);
   settings_close(prefs);
   layout_free(layout);
   log_console_free(g_console);
