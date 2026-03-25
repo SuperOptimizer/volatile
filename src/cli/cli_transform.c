@@ -124,9 +124,12 @@ int cmd_transform(int argc, char **argv) {
   vec3f pmin = surf->points[0], pmax = surf->points[0];
   for (int i = 1; i < n; i++) {
     vec3f p = surf->points[i];
-    if (p.x < pmin.x) pmin.x = p.x;  if (p.x > pmax.x) pmax.x = p.x;
-    if (p.y < pmin.y) pmin.y = p.y;  if (p.y > pmax.y) pmax.y = p.y;
-    if (p.z < pmin.z) pmin.z = p.z;  if (p.z > pmax.z) pmax.z = p.z;
+    if (p.x < pmin.x) pmin.x = p.x;
+    if (p.x > pmax.x) pmax.x = p.x;
+    if (p.y < pmin.y) pmin.y = p.y;
+    if (p.y > pmax.y) pmax.y = p.y;
+    if (p.z < pmin.z) pmin.z = p.z;
+    if (p.z > pmax.z) pmax.z = p.z;
   }
 
   printf("transformed %d vertices -> %s\n", n, out_path);

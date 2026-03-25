@@ -1,4 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "cli_normals.h"
 #include "cli_progress.h"

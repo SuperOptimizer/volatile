@@ -1,8 +1,10 @@
+#define _DEFAULT_SOURCE
 #include "greatest.h"
 #include "gui/neural_trace.h"
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // ---------------------------------------------------------------------------
 // neural_tracer lifecycle tests (no subprocess spawned)

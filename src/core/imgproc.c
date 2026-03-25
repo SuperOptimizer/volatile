@@ -967,6 +967,21 @@ void thinning_3d(const uint8_t *restrict mask, uint8_t *restrict skeleton,
                              : cur[((size_t)nz * height + ny) * width + nx] == 0;
             if (!border_bg) continue;
 
+            // Endpoint preservation (Lee94): never remove voxels with <= 1
+            // foreground 26-neighbor (endpoints or isolated voxels).
+            int fg_nbrs = 0;
+            for (int dz2 = -1; dz2 <= 1; dz2++)
+              for (int dy2 = -1; dy2 <= 1; dy2++)
+                for (int dx2 = -1; dx2 <= 1; dx2++) {
+                  if (dz2 == 0 && dy2 == 0 && dx2 == 0) continue;
+                  int nz2 = z+dz2, ny2 = y+dy2, nx2 = x+dx2;
+                  if (nz2 >= 0 && nz2 < depth && ny2 >= 0 && ny2 < height &&
+                      nx2 >= 0 && nx2 < width &&
+                      cur[((size_t)nz2 * height + ny2) * width + nx2])
+                    fg_nbrs++;
+                }
+            if (fg_nbrs <= 1) continue;
+
             if (is_simple(cur, z, y, x, depth, height, width)) del[i] = 1;
           }
         }

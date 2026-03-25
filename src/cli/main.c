@@ -16,6 +16,9 @@
 #include "cli/cli_inpaint.h"
 #include "cli/cli_normals.h"
 #include "cli/cli_winding.h"
+#include "cli/cli_diff.h"
+#include "cli/cli_transform.h"
+#include "cli/cli_video.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +51,10 @@ static void print_usage(void) {
   puts("  mask     <surface> --volume <vol> --output <mask>  Binary mask from surface");
   puts("  inpaint  <image> --mask <mask> --output <out>  Telea inpainting for hole-filling");
   puts("  normals  <volume> --output <normals.zarr>    Per-voxel normals via structure tensor");
-  puts("  winding  <surface.obj> --output <w.zarr> --shape Z,Y,X  Winding number field");
+  puts("  winding    <surface.obj> --output <w.zarr> --shape Z,Y,X  Winding number field");
+  puts("  diff       <surface1> <surface2> [--output <diff.tiff>]  Per-vertex distance stats");
+  puts("  transform  <surface> --matrix <4x4.json> --output <out>  Apply 4x4 matrix transform");
+  puts("  video      <surface> --volume <vol> --output <out.mp4>   Render slice video");
   puts("  version                                      Print version string");
   puts("  help                                         Print this message");
 }
@@ -192,6 +198,9 @@ int main(int argc, char **argv) {
   if (strcmp(cmd, "inpaint")    == 0) return cmd_inpaint(sub_argc, sub_argv);
   if (strcmp(cmd, "normals")    == 0) return cmd_normals(sub_argc, sub_argv);
   if (strcmp(cmd, "winding")    == 0) return cmd_winding(sub_argc, sub_argv);
+  if (strcmp(cmd, "diff")       == 0) return cmd_diff(sub_argc, sub_argv);
+  if (strcmp(cmd, "transform")  == 0) return cmd_transform(sub_argc, sub_argv);
+  if (strcmp(cmd, "video")      == 0) return cmd_video(sub_argc, sub_argv);
 
   fprintf(stderr, "unknown command: %s\n\n", cmd);
   print_usage();

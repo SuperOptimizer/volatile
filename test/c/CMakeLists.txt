@@ -31,6 +31,7 @@ set(_server_tests
 # core + server + render + cli
 set(_cli_tests
   test_cli_convert test_cli_grow
+  test_metrics test_mask test_inpaint
 )
 
 # core + render + gui  (EXCLUDE_FROM_ALL — only built when volatile_gui is)
@@ -40,6 +41,7 @@ set(_gui_tests
   test_nk_widgets test_console test_plugin_mgr test_surface_panel
   test_neural_trace test_crosshair test_seg_growth test_approval_mask
   test_layout test_drawing test_seeding test_vol_selector test_window_range
+  test_toolbar
 )
 
 # tests not listed above (e.g. CLI tests) get core only

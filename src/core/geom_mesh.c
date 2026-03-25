@@ -57,7 +57,7 @@ static bool point_in_mesh(const tri_mesh *m, vec3f p) {
     float det = f0 + f1 + f2;
     if (fabsf(det) < 1e-12f) continue;
     float t = (f0 * a.x + f1 * b.x + f2 * c.x) / det;
-    if (t > 0.0f) crossings++;
+    if (t > p.x) crossings++;
   }
   return (crossings & 1) != 0;
 }
@@ -161,13 +161,20 @@ mesh_quality_t mesh_quality(const tri_mesh *m) {
         for (int r = 0; r < 3 && !shared; r++)
           if (m->indices[i*3+p] == m->indices[j*3+r]) shared = true;
       if (shared) continue;
-      // Simple signed-volume test: if all vertices of one triangle are on the
-      // same side of the other's plane, no intersection.
-      vec3f n = vec3f_normalize(vec3f_cross(vec3f_sub(a1,a0), vec3f_sub(a2,a0)));
-      float d0 = vec3f_dot(vec3f_sub(b0,a0),n);
-      float d1 = vec3f_dot(vec3f_sub(b1,a0),n);
-      float d2 = vec3f_dot(vec3f_sub(b2,a0),n);
-      if ((d0>0&&d1>0&&d2>0)||(d0<0&&d1<0&&d2<0)) continue;
+      // Two-sided signed-volume separating-plane test (with small epsilon to
+      // avoid counting coplanar-touching faces as self-intersecting).
+      const float eps = 1e-4f;
+      vec3f na = vec3f_normalize(vec3f_cross(vec3f_sub(a1,a0), vec3f_sub(a2,a0)));
+      float d0 = vec3f_dot(vec3f_sub(b0,a0),na);
+      float d1 = vec3f_dot(vec3f_sub(b1,a0),na);
+      float d2 = vec3f_dot(vec3f_sub(b2,a0),na);
+      if ((d0>eps&&d1>eps&&d2>eps)||(d0<-eps&&d1<-eps&&d2<-eps)) continue;
+      // Also test B's plane against A's vertices.
+      vec3f nb = vec3f_normalize(vec3f_cross(vec3f_sub(b1,b0), vec3f_sub(b2,b0)));
+      float e0 = vec3f_dot(vec3f_sub(a0,b0),nb);
+      float e1 = vec3f_dot(vec3f_sub(a1,b0),nb);
+      float e2 = vec3f_dot(vec3f_sub(a2,b0),nb);
+      if ((e0>eps&&e1>eps&&e2>eps)||(e0<-eps&&e1<-eps&&e2<-eps)) continue;
       q.self_intersections++;
     }
   }

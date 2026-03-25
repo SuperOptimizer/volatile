@@ -19,6 +19,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -106,13 +107,13 @@ bool window_range_render(window_range_state *s, struct nk_context *ctx) {
   if (s->auto_range != prev_auto) changed = true;
 
   // --- colormap selector ---
-  int cmap_count = cmap_count();
+  int ncmaps = cmap_count();
   const char *cmap_names[CMAP_COUNT];
-  for (int i = 0; i < cmap_count; i++) cmap_names[i] = cmap_name((cmap_id)i);
+  for (int i = 0; i < ncmaps; i++) cmap_names[i] = cmap_name((cmap_id)i);
 
   int prev_cmap = s->cmap_id;
   struct nk_vec2 combo_size = {200, 200};
-  s->cmap_id = nk_combo(ctx, cmap_names, cmap_count, s->cmap_id, 22, combo_size);
+  s->cmap_id = nk_combo(ctx, cmap_names, ncmaps, s->cmap_id, 22, combo_size);
   if (s->cmap_id != prev_cmap) changed = true;
 
   (void)prev_low; (void)prev_high;

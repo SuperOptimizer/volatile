@@ -13,6 +13,9 @@ add_library(volatile_cli STATIC
   cli_inpaint.c
   cli_normals.c
   cli_winding.c
+  cli_diff.c
+  cli_transform.c
+  cli_video.c
 )
 
 target_include_directories(volatile_cli PUBLIC

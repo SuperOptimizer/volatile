@@ -116,8 +116,9 @@ TEST test_inpaint_roundtrip(void) {
   FILE *f = fopen(out_path, "rb");
   ASSERT(f != NULL);
   char magic[3] = {0};
-  fscanf(f, "%2s", magic);
+  int nf = fscanf(f, "%2s", magic);
   fclose(f);
+  ASSERT_EQ(1, nf);
   ASSERT_STR_EQ("P6", magic);
 
   rm_f(img_path); rm_f(mask_path); rm_f(out_path);

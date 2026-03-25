@@ -56,7 +56,7 @@ static bool make_test_zarr(const char *path) {
 static void rm_rf(const char *path) {
   char buf[512];
   snprintf(buf, sizeof(buf), "rm -rf '%s'", path);
-  system(buf);
+  int _rc = system(buf); (void)_rc;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +118,9 @@ TEST test_mask_plane_produces_output(void) {
   FILE *f = fopen(out_path, "rb");
   ASSERT(f != NULL);
   char magic[5] = {0};
-  fread(magic, 1, 4, f);
+  size_t nr = fread(magic, 1, 4, f);
   fclose(f);
+  ASSERT_EQ(4u, nr);
   ASSERT_STR_EQ("VMSK", magic);
 
   rm_f(out_path);

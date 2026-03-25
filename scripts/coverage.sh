@@ -53,20 +53,25 @@ for dir in src/core src/render src/gpu src/server; do
     [ -f "${src_file}" ] || continue
     base="$(basename "${src_file}" .c)"
 
-    # gcov needs the .gcda alongside the .gcno; both live under the CMake
-    # object directory tree.  Find the right .gcda file.
+    # Find the .gcda file produced by the test run.  CMake places object files at:
+    #   <build>/src/<lib>/CMakeFiles/<target>.dir/<file>.c.gcda
     gcda_file="$(find "${BUILD}" -name "${base}.c.gcda" 2>/dev/null | head -1)"
     if [ -z "${gcda_file}" ]; then
       printf "%-52s %8s\n" "${dir}/${base}.c" "(not instrumented)"
       continue
     fi
 
-    # Run gcov, capturing output.  -b -c for branch info (ignored here).
-    gcov_out="$(gcov -n -o "$(dirname "${gcda_file}")" "${src_file}" 2>/dev/null)" || continue
+    gcda_dir="$(dirname "${gcda_file}")"
+
+    # Key fix: cd into the directory that contains the .gcda/.gcno pair, then
+    # invoke gcov with the absolute source path.  This lets gcov locate both
+    # the instrumentation data and the source without any path guessing.
+    # -n suppresses writing a .gcov output file; we only need the stdout stats.
+    gcov_out="$(cd "${gcda_dir}" && gcov -n "${src_file}" 2>/dev/null)" || continue
 
     # Parse "Lines executed:XX.XX% of NNN" from gcov stdout.
-    pct="$(echo "${gcov_out}"    | grep -oP 'Lines executed:\K[0-9.]+(?=%)' | head -1)"
-    total="$(echo "${gcov_out}"  | grep -oP 'of \K[0-9]+' | head -1)"
+    pct="$(  printf '%s' "${gcov_out}" | grep -oP 'Lines executed:\K[0-9.]+(?=%)' | head -1)"
+    total="$(printf '%s' "${gcov_out}" | grep -oP 'of \K[0-9]+' | head -1)"
 
     if [ -z "${pct}" ] || [ -z "${total}" ]; then
       printf "%-52s %8s\n" "${dir}/${base}.c" "(no data)"

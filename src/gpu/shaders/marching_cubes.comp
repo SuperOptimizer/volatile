@@ -1,0 +1,197 @@
+#version 450
+
+// ---------------------------------------------------------------------------
+// marching_cubes.comp — GPU marching cubes iso-surface extraction
+//
+// Each invocation processes one voxel of the volume.  The workgroup is
+// 4x4x4 = 64 threads; the dispatch covers (vol_dim / 4) in each axis.
+//
+// Algorithm (Lorensen & Cline 1987):
+//   1. Sample 8 corner densities of the voxel cube.
+//   2. Build a cube index (0-255) from which corners exceed iso_value.
+//   3. Look up the triangle table for that index.
+//   4. For each triangle edge, interpolate the vertex position.
+//   5. Append three vertices per triangle into the output buffer via atomicAdd.
+//
+// Output layout:
+//   vertex_buf: tightly packed float[3] positions (x,y,z), world-space.
+//   counter_buf: single uint — total number of floats written so far.
+//                Divide by 9 to get triangle count; divide by 3 for vertex count.
+//
+// Indirect draw: the caller can construct a VkDrawIndirectCommand from
+//   vertexCount = counter_buf.count / 3.
+// ---------------------------------------------------------------------------
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// ---------------------------------------------------------------------------
+// Bindings
+// ---------------------------------------------------------------------------
+
+// 3D volume: normalised [0,1] float samples.
+layout(set = 0, binding = 0) uniform sampler3D volume;
+
+// Output vertex position buffer: flat array of floats, stride = 12 bytes (vec3).
+// Max capacity set by the caller; no bounds check here — size it generously.
+layout(set = 0, binding = 1) writeonly buffer VertexBuffer {
+  float positions[];  // [x0,y0,z0, x1,y1,z1, ...]
+} vertex_buf;
+
+// Atomic counter: number of floats written.  Reset to 0 before each dispatch.
+layout(set = 0, binding = 2) buffer CounterBuffer {
+  uint count;
+} counter_buf;
+
+// ---------------------------------------------------------------------------
+// Push constants
+// ---------------------------------------------------------------------------
+
+layout(push_constant) uniform PushConstants {
+  float iso_value;    // density threshold [0,1]
+  float voxel_size;   // world-space size of one voxel (for scaling positions)
+  uint  vol_dim_x;    // volume dimensions in voxels
+  uint  vol_dim_y;
+  uint  vol_dim_z;
+} pc;
+
+// ---------------------------------------------------------------------------
+// Marching cubes lookup tables (included as GLSL const arrays)
+// ---------------------------------------------------------------------------
+
+#include "marching_cubes_tables.h"
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Sample the 3D volume at integer voxel coordinates (clamped to volume bounds).
+float sample_voxel(ivec3 p) {
+  vec3 uvw = (vec3(p) + 0.5) / vec3(pc.vol_dim_x, pc.vol_dim_y, pc.vol_dim_z);
+  return texture(volume, uvw).r;
+}
+
+// Linearly interpolate a vertex position on the edge between two voxel corners.
+// p0, p1: integer voxel-space corner positions
+// v0, v1: density values at those corners
+// Returns world-space position.
+vec3 interp_vertex(ivec3 p0, ivec3 p1, float v0, float v1) {
+  // Avoid division by near-zero when both corners have the same value.
+  float t = 0.5;
+  float dv = v1 - v0;
+  if (abs(dv) > 1e-6) {
+    t = (pc.iso_value - v0) / dv;
+  }
+  vec3 wp = mix(vec3(p0), vec3(p1), t) * pc.voxel_size;
+  return wp;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+void main() {
+  ivec3 voxel = ivec3(gl_GlobalInvocationID);
+
+  // Guard: leave a 1-voxel border so all 8 corners are in bounds.
+  if (voxel.x >= int(pc.vol_dim_x) - 1 ||
+      voxel.y >= int(pc.vol_dim_y) - 1 ||
+      voxel.z >= int(pc.vol_dim_z) - 1) {
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 1: Sample 8 corners of this voxel cube.
+  //
+  // Corner numbering follows the standard MC convention:
+  //
+  //     4----5
+  //    /|   /|
+  //   7----6 |          Y
+  //   | 0--|-1          |
+  //   |/   |/           +--- X
+  //   3----2           /
+  //                   Z
+  // -------------------------------------------------------------------------
+  float corner[8];
+  corner[0] = sample_voxel(voxel + ivec3(0,0,0));
+  corner[1] = sample_voxel(voxel + ivec3(1,0,0));
+  corner[2] = sample_voxel(voxel + ivec3(1,0,1));
+  corner[3] = sample_voxel(voxel + ivec3(0,0,1));
+  corner[4] = sample_voxel(voxel + ivec3(0,1,0));
+  corner[5] = sample_voxel(voxel + ivec3(1,1,0));
+  corner[6] = sample_voxel(voxel + ivec3(1,1,1));
+  corner[7] = sample_voxel(voxel + ivec3(0,1,1));
+
+  // -------------------------------------------------------------------------
+  // Step 2: Build cube index.
+  // Bit i is set if corner[i] >= iso_value (inside the surface).
+  // -------------------------------------------------------------------------
+  int cube_index = 0;
+  if (corner[0] >= pc.iso_value) cube_index |= 1;
+  if (corner[1] >= pc.iso_value) cube_index |= 2;
+  if (corner[2] >= pc.iso_value) cube_index |= 4;
+  if (corner[3] >= pc.iso_value) cube_index |= 8;
+  if (corner[4] >= pc.iso_value) cube_index |= 16;
+  if (corner[5] >= pc.iso_value) cube_index |= 32;
+  if (corner[6] >= pc.iso_value) cube_index |= 64;
+  if (corner[7] >= pc.iso_value) cube_index |= 128;
+
+  // Entirely inside or outside — no triangles.
+  if (edgeTable[cube_index] == 0) return;
+
+  // -------------------------------------------------------------------------
+  // Step 3: Compute the 12 possible edge-intersection vertices.
+  // Only the edges indicated by edgeTable[cube_index] are used;
+  // we compute all 12 unconditionally to avoid divergent branching.
+  //
+  // Edge numbering (standard MC):
+  //   0: c0-c1   1: c1-c2   2: c2-c3   3: c3-c0
+  //   4: c4-c5   5: c5-c6   6: c6-c7   7: c7-c4
+  //   8: c0-c4   9: c1-c5  10: c2-c6  11: c3-c7
+  // -------------------------------------------------------------------------
+  vec3 edge_vert[12];
+  edge_vert[ 0] = interp_vertex(voxel+ivec3(0,0,0), voxel+ivec3(1,0,0), corner[0], corner[1]);
+  edge_vert[ 1] = interp_vertex(voxel+ivec3(1,0,0), voxel+ivec3(1,0,1), corner[1], corner[2]);
+  edge_vert[ 2] = interp_vertex(voxel+ivec3(1,0,1), voxel+ivec3(0,0,1), corner[2], corner[3]);
+  edge_vert[ 3] = interp_vertex(voxel+ivec3(0,0,1), voxel+ivec3(0,0,0), corner[3], corner[0]);
+  edge_vert[ 4] = interp_vertex(voxel+ivec3(0,1,0), voxel+ivec3(1,1,0), corner[4], corner[5]);
+  edge_vert[ 5] = interp_vertex(voxel+ivec3(1,1,0), voxel+ivec3(1,1,1), corner[5], corner[6]);
+  edge_vert[ 6] = interp_vertex(voxel+ivec3(1,1,1), voxel+ivec3(0,1,1), corner[6], corner[7]);
+  edge_vert[ 7] = interp_vertex(voxel+ivec3(0,1,1), voxel+ivec3(0,1,0), corner[7], corner[4]);
+  edge_vert[ 8] = interp_vertex(voxel+ivec3(0,0,0), voxel+ivec3(0,1,0), corner[0], corner[4]);
+  edge_vert[ 9] = interp_vertex(voxel+ivec3(1,0,0), voxel+ivec3(1,1,0), corner[1], corner[5]);
+  edge_vert[10] = interp_vertex(voxel+ivec3(1,0,1), voxel+ivec3(1,1,1), corner[2], corner[6]);
+  edge_vert[11] = interp_vertex(voxel+ivec3(0,0,1), voxel+ivec3(0,1,1), corner[3], corner[7]);
+
+  // -------------------------------------------------------------------------
+  // Step 4: Walk the triangle table and emit triangles.
+  // triTable[cube_index] has up to 5 triangles (15 edge indices); -1 = end.
+  // -------------------------------------------------------------------------
+  for (int i = 0; i < 15; i += 3) {
+    int e0 = triTable[cube_index][i    ];
+    int e1 = triTable[cube_index][i + 1];
+    int e2 = triTable[cube_index][i + 2];
+    if (e0 < 0) break;
+
+    vec3 v0 = edge_vert[e0];
+    vec3 v1 = edge_vert[e1];
+    vec3 v2 = edge_vert[e2];
+
+    // Claim 9 floats in the output buffer atomically (3 vertices * 3 floats).
+    uint base = atomicAdd(counter_buf.count, 9u);
+
+    // Write triangle vertices (positions only; normals can be derived by the
+    // caller from (v1-v0) x (v2-v0), or added as a second pass).
+    vertex_buf.positions[base + 0] = v0.x;
+    vertex_buf.positions[base + 1] = v0.y;
+    vertex_buf.positions[base + 2] = v0.z;
+
+    vertex_buf.positions[base + 3] = v1.x;
+    vertex_buf.positions[base + 4] = v1.y;
+    vertex_buf.positions[base + 5] = v1.z;
+
+    vertex_buf.positions[base + 6] = v2.x;
+    vertex_buf.positions[base + 7] = v2.y;
+    vertex_buf.positions[base + 8] = v2.z;
+  }
+}
