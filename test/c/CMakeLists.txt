@@ -135,8 +135,8 @@ foreach(_src IN LISTS _test_sources)
   endif()
 
   if(_name IN_LIST _gui_tests)
-    # GUI tests: only add executable if volatile_gui target exists
-    if(TARGET volatile_gui)
+    # GUI tests: only add executable if Nuklear GUI is enabled and target exists
+    if(VOLATILE_GUI_NUKLEAR AND TARGET volatile_gui)
       add_executable(${_name} EXCLUDE_FROM_ALL ${_src})
       target_link_libraries(${_name} PRIVATE volatile_core volatile_render volatile_gui)
       target_include_directories(${_name} PRIVATE ${greatest_SOURCE_DIR})

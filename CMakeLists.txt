@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(volatile VERSION 0.1.0 LANGUAGES C)
+project(volatile VERSION 0.1.0 LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
 # C standard — set on our own targets, not globally, so FetchContent
@@ -29,14 +29,15 @@ add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 # ---------------------------------------------------------------------------
 # Build options
 # ---------------------------------------------------------------------------
-option(VOLATILE_BUILD_TESTS "Build C test suite" ON)
+option(VOLATILE_BUILD_TESTS    "Build C test suite"       ON)
+option(VOLATILE_GUI_QT         "Build Qt6 GUI"            ON)
+option(VOLATILE_GUI_NUKLEAR    "Build Nuklear/SDL3 GUI"   OFF)
 
 # ---------------------------------------------------------------------------
-# Dependencies — system
+# Dependencies — system (core always needs these)
 # ---------------------------------------------------------------------------
 find_package(CURL REQUIRED)
 find_package(SQLite3 REQUIRED)
-find_package(SDL3 REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Dependencies — FetchContent
@@ -83,38 +84,56 @@ if(blosc2_SOURCE_DIR)
   suppress_warnings_recursive("${blosc2_SOURCE_DIR}")
 endif()
 
-# Nuklear — immediate-mode GUI (header-only)
-FetchContent_Declare(
-  nuklear
-  GIT_REPOSITORY https://github.com/Immediate-Mode-UI/Nuklear.git
-  GIT_TAG        master
-  GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(nuklear)
+# Nuklear + SDL3 — only fetched when Nuklear GUI is enabled
+if(VOLATILE_GUI_NUKLEAR)
+  find_package(SDL3 QUIET)
+  if(SDL3_FOUND)
+    # Nuklear — immediate-mode GUI (header-only)
+    FetchContent_Declare(
+      nuklear
+      GIT_REPOSITORY https://github.com/Immediate-Mode-UI/Nuklear.git
+      GIT_TAG        master
+      GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(nuklear)
 
-# nuklear_sdl3_renderer — SDL3 renderer backend bridge for Nuklear
-# NOTE: single-header bridge lives in demo/sdl_renderer/ of the Nuklear repo
-FetchContent_Declare(
-  nuklear_sdl3_renderer
-  GIT_REPOSITORY https://github.com/Immediate-Mode-UI/Nuklear.git
-  GIT_TAG        master
-  GIT_SHALLOW    TRUE
-  SOURCE_SUBDIR  demo/sdl_renderer
-)
-# NOTE: We use nuklear_SOURCE_DIR for nuklear.h and
-# ${CMAKE_SOURCE_DIR}/src/gui/vendor for the renderer bridge header,
-# which we copy from the Nuklear demo tree at configure time.
-set(nuklear_sdl3_renderer_SOURCE_DIR ${nuklear_SOURCE_DIR}/demo/sdl3_renderer)
+    # nuklear_sdl3_renderer — SDL3 renderer backend bridge for Nuklear
+    # NOTE: single-header bridge lives in demo/sdl3_renderer/ of the Nuklear repo.
+    # We use nuklear_SOURCE_DIR for nuklear.h; the renderer header comes from there.
+    set(nuklear_sdl3_renderer_SOURCE_DIR ${nuklear_SOURCE_DIR}/demo/sdl3_renderer)
+  else()
+    message(STATUS "SDL3 not found — disabling Nuklear GUI")
+    set(VOLATILE_GUI_NUKLEAR OFF CACHE BOOL "" FORCE)
+  endif()
+endif()
 
 # ---------------------------------------------------------------------------
-# Subdirectories
+# Subdirectories — core always built
 # ---------------------------------------------------------------------------
 add_subdirectory(src/core)
-add_subdirectory(src/gui)
 add_subdirectory(src/render)
 add_subdirectory(src/gpu)
 add_subdirectory(src/server)
 add_subdirectory(src/cli)
+
+# Qt GUI — optional
+if(VOLATILE_GUI_QT)
+  find_package(Qt6 QUIET COMPONENTS Widgets Gui Core)
+  if(Qt6_FOUND)
+    message(STATUS "Qt6 found — building Qt GUI")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/gui_qt/CMakeLists.txt")
+      add_subdirectory(src/gui_qt)
+    endif()
+  else()
+    message(STATUS "Qt6 not found — skipping Qt GUI (Nuklear fallback available)")
+  endif()
+endif()
+
+# Nuklear/SDL3 GUI — optional fallback
+if(VOLATILE_GUI_NUKLEAR AND SDL3_FOUND)
+  message(STATUS "SDL3 found — building Nuklear GUI")
+  add_subdirectory(src/gui)
+endif()
 
 if(VOLATILE_BUILD_TESTS)
   enable_testing()
