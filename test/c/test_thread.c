@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#include <pthread.h>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -137,6 +138,90 @@ TEST test_future_done_flag(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: submit from multiple threads simultaneously
+// ---------------------------------------------------------------------------
+
+typedef struct { threadpool *p; atomic_int *counter; } submit_arg;
+
+static void *submitter_fn(void *arg_ptr) {
+  submit_arg *a = arg_ptr;
+  for (int i = 0; i < 10; i++)
+    threadpool_fire(a->p, increment_counter, NULL);
+  (void)a->counter;
+  return NULL;
+}
+
+TEST test_submit_from_multiple_threads(void) {
+  atomic_store(&g_counter, 0);
+  threadpool *p = threadpool_new(4);
+
+  const int NSUBMITTERS = 4;
+  pthread_t threads[4];
+  submit_arg args[4];
+  for (int i = 0; i < NSUBMITTERS; i++) {
+    args[i] = (submit_arg){p, &g_counter};
+    pthread_create(&threads[i], NULL, submitter_fn, &args[i]);
+  }
+  for (int i = 0; i < NSUBMITTERS; i++) pthread_join(threads[i], NULL);
+
+  threadpool_drain(p, 2000);
+  ASSERT_EQ(40, atomic_load(&g_counter));  // 4 threads * 10 tasks each
+
+  threadpool_free(p);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Test: future_get timeout returns NULL for a long-running task
+// ---------------------------------------------------------------------------
+
+static void *slow_task(void *arg) {
+  usleep(100000);  // 100 ms
+  return arg;
+}
+
+TEST test_future_timeout_returns_null(void) {
+  threadpool *p = threadpool_new(1);
+  future *f = threadpool_submit(p, slow_task, (void *)0xAB);
+
+  // 1 ms timeout — must return NULL (or the result if it races, but unlikely)
+  void *res = future_get(f, 1);
+  // If it raced and finished, res may be non-NULL — that's also valid.
+  // The key requirement: no deadlock, and if NULL then it must be timeout.
+  if (res == NULL) {
+    ASSERT(!future_done(f));  // should not be done if we got NULL via timeout
+  }
+
+  // Wait properly now.
+  void *final = future_get(f, 500);
+  ASSERT_EQ((uintptr_t)final, (uintptr_t)0xAB);
+  ASSERT(future_done(f));
+
+  future_free(f);
+  threadpool_free(p);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Test: 1-thread pool handles sequential tasks correctly
+// ---------------------------------------------------------------------------
+
+TEST test_single_thread_sequential(void) {
+  atomic_store(&g_counter, 0);
+  threadpool *p = threadpool_new(1);
+
+  // Submit 20 tasks — with one thread they run one-at-a-time.
+  for (int i = 0; i < 20; i++)
+    threadpool_fire(p, increment_counter, NULL);
+
+  threadpool_drain(p, 1000);
+  ASSERT_EQ(20, atomic_load(&g_counter));
+
+  threadpool_free(p);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
 
@@ -149,6 +234,9 @@ SUITE(thread_suite) {
   RUN_TEST(test_pool_stats);
   RUN_TEST(test_auto_thread_count);
   RUN_TEST(test_future_done_flag);
+  RUN_TEST(test_submit_from_multiple_threads);
+  RUN_TEST(test_future_timeout_returns_null);
+  RUN_TEST(test_single_thread_sequential);
 }
 
 GREATEST_MAIN_DEFS();

@@ -7,13 +7,19 @@ typedef struct vol_mirror vol_mirror;
 typedef struct volume volume;
 
 typedef struct {
-  const char *remote_url;      // http://... or s3://...
-  const char *local_cache_dir; // where to store cached data (default ~/.cache/volatile/)
-  bool auto_rechunk;           // rechunk to optimal local chunk size on cache
-  bool auto_compress4d;        // recompress blosc chunks to compress4d locally
-  int64_t max_cache_bytes;     // max disk cache size (0 = default 50GB)
-  int prefetch_radius;         // neighboring chunks to prefetch (0 = default 2)
+  const char *remote_url;       // http://... or s3://... or /local/path
+  const char *local_cache_dir;  // where to store cached data (default ~/.cache/volatile/)
+  bool auto_rechunk;            // rechunk to optimal local chunk size on cache
+  bool auto_compress4d;         // recompress blosc/raw chunks to compress4d locally
+  bool force_recompress;        // recompress even if remote is already compress4d
+  bool prefer_binary_protocol;  // use volatile TCP protocol if server supports it (default true)
+  int64_t max_cache_bytes;      // max disk cache size (0 = default 50GB)
+  int prefetch_radius;          // neighboring chunks to prefetch (0 = default 2)
 } mirror_config;
+
+// Codec detection helpers (public so CLI can show informative messages)
+bool vol_mirror_remote_is_compress4d(const vol_mirror *m);
+bool vol_mirror_remote_is_volatile_server(const vol_mirror *m);
 
 // Create a mirrored volume: reads from remote, caches locally.
 vol_mirror *vol_mirror_new(mirror_config cfg);

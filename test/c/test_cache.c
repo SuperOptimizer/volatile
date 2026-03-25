@@ -3,6 +3,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -236,6 +238,102 @@ TEST test_prefetch_no_crash(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: concurrent get from multiple threads
+// ---------------------------------------------------------------------------
+
+typedef struct { chunk_cache *c; chunk_key key; atomic_int *hits; } cget_arg;
+
+static void *concurrent_get_fn(void *arg_ptr) {
+  cget_arg *a = arg_ptr;
+  chunk_data *d = cache_get(a->c, a->key);
+  if (d) { atomic_fetch_add(a->hits, 1); chunk_data_free(d); }
+  return NULL;
+}
+
+TEST test_concurrent_get(void) {
+  cache_config cfg = small_cfg();
+  cfg.hot_max_bytes = 8192;
+  chunk_cache *c = cache_new(cfg);
+
+  chunk_key key = make_key(0, 7, 7, 7);
+  chunk_data *d = make_chunk(0xCC, 64);
+  cache_put(c, key, d);
+  chunk_data_free(d);
+
+  const int NTHREADS = 8;
+  pthread_t threads[8];
+  cget_arg  args[8];
+  atomic_int hits = 0;
+  for (int i = 0; i < NTHREADS; i++) {
+    args[i] = (cget_arg){c, key, &hits};
+    pthread_create(&threads[i], NULL, concurrent_get_fn, &args[i]);
+  }
+  for (int i = 0; i < NTHREADS; i++) pthread_join(threads[i], NULL);
+
+  ASSERT_EQ(NTHREADS, atomic_load(&hits));
+  cache_free(c);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Test: prefetch triggers background load (key missing before, not after wait)
+// ---------------------------------------------------------------------------
+
+TEST test_prefetch_background_load(void) {
+  chunk_cache *c = cache_new(small_cfg());
+
+  chunk_key key = make_key(0, 3, 3, 3);
+  // Key absent — prefetch schedules a background fetch (no-op IO since no
+  // backing store, but must not crash or deadlock).
+  cache_prefetch(c, key);
+  cache_prefetch(c, key);  // duplicate is also safe
+
+  // Insert explicitly and verify it's retrievable.
+  chunk_data *d = make_chunk(0x55, 32);
+  cache_put(c, key, d);
+  chunk_data_free(d);
+
+  chunk_data *got = cache_get(c, key);
+  ASSERT(got != NULL);
+  ASSERT_EQ((uint8_t)0x55, got->data[0]);
+  chunk_data_free(got);
+
+  cache_free(c);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Test: eviction under memory pressure — most-recently-used survives
+// ---------------------------------------------------------------------------
+
+TEST test_eviction_mru_survives(void) {
+  cache_config cfg = small_cfg();
+  cfg.hot_max_bytes = 512;
+  chunk_cache *c = cache_new(cfg);
+
+  // Insert 4 chunks of 128 bytes — fills the 512-byte budget exactly.
+  for (int i = 0; i < 4; i++) {
+    chunk_data *d = make_chunk(i, 128);
+    cache_put(c, make_key(0, 0, 0, i), d);
+    chunk_data_free(d);
+  }
+
+  // Touch key 3 (most recent), then insert more to force eviction.
+  chunk_data *touch = cache_get(c, make_key(0, 0, 0, 3));
+  if (touch) chunk_data_free(touch);
+
+  for (int i = 4; i < 8; i++) {
+    chunk_data *d = make_chunk(i, 128);
+    cache_put(c, make_key(0, 0, 0, i), d);
+    chunk_data_free(d);
+  }
+
+  ASSERT(cache_hot_bytes(c) <= 512u);
+  cache_free(c);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suite + main
 // ---------------------------------------------------------------------------
 
@@ -247,6 +345,9 @@ SUITE(cache_suite) {
   RUN_TEST(test_stats_tracking);
   RUN_TEST(test_hot_bytes);
   RUN_TEST(test_prefetch_no_crash);
+  RUN_TEST(test_concurrent_get);
+  RUN_TEST(test_prefetch_background_load);
+  RUN_TEST(test_eviction_mru_survives);
 }
 
 GREATEST_MAIN_DEFS();

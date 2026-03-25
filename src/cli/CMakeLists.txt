@@ -8,6 +8,7 @@ add_library(volatile_cli STATIC
   cli_connect.c
   cli_render.c
   cli_zarr_ops.c
+  cli_mirror.c
   cli_metrics.c
   cli_mask.c
   cli_inpaint.c

@@ -10,7 +10,7 @@ file(GLOB _test_sources CONFIGURE_DEPENDS test_*.c)
 set(_core_only_tests
   test_log test_hash test_json test_chunk test_thread
   test_math test_geom test_imgproc test_io test_net
-  test_vol test_cache test_compress4d
+  test_vol test_cache test_compress4d test_vol_mirror
 )
 
 # core + render
@@ -20,12 +20,12 @@ set(_render_tests
 
 # core + gpu
 set(_gpu_tests
-  test_vk test_gpu test_shader
+  test_vk test_gpu test_shader test_gpu_compute
 )
 
 # core + server
 set(_server_tests
-  test_db test_protocol test_srv
+  test_db test_protocol test_srv test_collab test_review
 )
 
 # core + server + render + cli

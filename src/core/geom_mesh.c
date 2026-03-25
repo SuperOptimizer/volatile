@@ -32,31 +32,25 @@ void tri_mesh_free(tri_mesh *m) {
 // ---------------------------------------------------------------------------
 
 // Returns true if point p is inside the mesh by counting X-ray crossings.
-// Uses the "top-left" edge rule to avoid double-counting on shared edges:
-// edges with f_i == 0 are only counted if the edge goes in a specific direction.
+// Uses a slight Y/Z perturbation to avoid degenerate edge/vertex hits.
 static bool point_in_mesh(const tri_mesh *m, vec3f p) {
+  // NOTE: small perturbation avoids shared-edge double-counting on manifold meshes.
+  const float dy = 1.7321e-5f;
+  const float dz = 1.4142e-5f;
   int crossings = 0;
   for (int f = 0; f < m->num_faces; f++) {
     vec3f a = m->verts[m->indices[f*3+0]];
     vec3f b = m->verts[m->indices[f*3+1]];
     vec3f c = m->verts[m->indices[f*3+2]];
 
-    // Shoot a ray from p in +X direction.
-    float ay = a.y - p.y, by = b.y - p.y, cy = c.y - p.y;
-    float az = a.z - p.z, bz = b.z - p.z, cz = c.z - p.z;
+    float ay = a.y - (p.y + dy), by = b.y - (p.y + dy), cy = c.y - (p.y + dy);
+    float az = a.z - (p.z + dz), bz = b.z - (p.z + dz), cz = c.z - (p.z + dz);
 
-    // Edge function signs for the YZ projection.
     float f0 = ay * bz - az * by;
     float f1 = by * cz - bz * cy;
     float f2 = cy * az - cz * ay;
 
-    // Use strict inequality for "top-left" rule: ties go to > 0 direction.
-    // This avoids double-counting at shared edges.
-    bool pass_pos = (f0 > 0 || (f0 == 0.0f && f1 > 0) || (f0 == 0.0f && f1 == 0.0f && f2 > 0));
-    bool all_pos  = (f0 >= 0 && f1 >= 0 && f2 >= 0 && pass_pos);
-    bool all_neg  = (f0 <= 0 && f1 <= 0 && f2 <= 0 && !pass_pos && (f0 < 0 || f1 < 0 || f2 < 0));
-
-    if (!all_pos && !all_neg) continue;
+    if (!((f0 >= 0 && f1 >= 0 && f2 >= 0) || (f0 <= 0 && f1 <= 0 && f2 <= 0))) continue;
 
     float det = f0 + f1 + f2;
     if (fabsf(det) < 1e-12f) continue;
@@ -165,20 +159,60 @@ mesh_quality_t mesh_quality(const tri_mesh *m) {
         for (int r = 0; r < 3 && !shared; r++)
           if (m->indices[i*3+p] == m->indices[j*3+r]) shared = true;
       if (shared) continue;
-      // Two-sided signed-volume separating-plane test (with small epsilon to
-      // avoid counting coplanar-touching faces as self-intersecting).
-      const float eps = 1e-4f;
+      // Möller 1997 triangle-triangle intersection test.
+      // Step 1: signed distances of tri B verts to plane of tri A.
       vec3f na = vec3f_normalize(vec3f_cross(vec3f_sub(a1,a0), vec3f_sub(a2,a0)));
-      float d0 = vec3f_dot(vec3f_sub(b0,a0),na);
-      float d1 = vec3f_dot(vec3f_sub(b1,a0),na);
-      float d2 = vec3f_dot(vec3f_sub(b2,a0),na);
-      if ((d0>eps&&d1>eps&&d2>eps)||(d0<-eps&&d1<-eps&&d2<-eps)) continue;
-      // Also test B's plane against A's vertices.
+      float da0 = vec3f_dot(vec3f_sub(b0,a0),na);
+      float da1 = vec3f_dot(vec3f_sub(b1,a0),na);
+      float da2 = vec3f_dot(vec3f_sub(b2,a0),na);
+      // Same side (or coplanar) → no intersection.
+      if (da0*da1 > 0 && da0*da2 > 0) continue;
+      // All coplanar — skip (degenerate; not a genuine crossing).
+      if (fabsf(da0) < 1e-6f && fabsf(da1) < 1e-6f && fabsf(da2) < 1e-6f) continue;
+      // Step 2: signed distances of tri A verts to plane of tri B.
       vec3f nb = vec3f_normalize(vec3f_cross(vec3f_sub(b1,b0), vec3f_sub(b2,b0)));
-      float e0 = vec3f_dot(vec3f_sub(a0,b0),nb);
-      float e1 = vec3f_dot(vec3f_sub(a1,b0),nb);
-      float e2 = vec3f_dot(vec3f_sub(a2,b0),nb);
-      if ((e0>eps&&e1>eps&&e2>eps)||(e0<-eps&&e1<-eps&&e2<-eps)) continue;
+      float db0 = vec3f_dot(vec3f_sub(a0,b0),nb);
+      float db1 = vec3f_dot(vec3f_sub(a1,b0),nb);
+      float db2 = vec3f_dot(vec3f_sub(a2,b0),nb);
+      if (db0*db1 > 0 && db0*db2 > 0) continue;
+      // Step 3: project both triangles onto line of intersection D = cross(na,nb)
+      // and check that the projected intervals overlap.
+      vec3f D = vec3f_cross(na, nb);
+      // Project all 6 vertices onto D.
+      float pa0 = vec3f_dot(D, a0), pa1 = vec3f_dot(D, a1), pa2 = vec3f_dot(D, a2);
+      float pb0 = vec3f_dot(D, b0), pb1 = vec3f_dot(D, b1), pb2 = vec3f_dot(D, b2);
+      // Compute the interval for tri A: the two vertices on the minority side
+      // of their plane intersection with D interpolate to the crossing points.
+      // Identify the lone vertex (opposite sign from the other two) for each tri.
+      // Tri A interval endpoints (parametric on D).
+      float ta0, ta1;
+      if (db0*db1 <= 0 && db0*db2 <= 0) {
+        // db0 is on opposite side from db1,db2.
+        ta0 = pa0 + (pa1 - pa0) * db0 / (db0 - db1);
+        ta1 = pa0 + (pa2 - pa0) * db0 / (db0 - db2);
+      } else if (db1*db0 <= 0 && db1*db2 <= 0) {
+        ta0 = pa1 + (pa0 - pa1) * db1 / (db1 - db0);
+        ta1 = pa1 + (pa2 - pa1) * db1 / (db1 - db2);
+      } else {
+        ta0 = pa2 + (pa0 - pa2) * db2 / (db2 - db0);
+        ta1 = pa2 + (pa1 - pa2) * db2 / (db2 - db1);
+      }
+      if (ta0 > ta1) { float tmp2 = ta0; ta0 = ta1; ta1 = tmp2; }
+      // Tri B interval endpoints.
+      float tb0, tb1;
+      if (da0*da1 <= 0 && da0*da2 <= 0) {
+        tb0 = pb0 + (pb1 - pb0) * da0 / (da0 - da1);
+        tb1 = pb0 + (pb2 - pb0) * da0 / (da0 - da2);
+      } else if (da1*da0 <= 0 && da1*da2 <= 0) {
+        tb0 = pb1 + (pb0 - pb1) * da1 / (da1 - da0);
+        tb1 = pb1 + (pb2 - pb1) * da1 / (da1 - da2);
+      } else {
+        tb0 = pb2 + (pb0 - pb2) * da2 / (da2 - da0);
+        tb1 = pb2 + (pb1 - pb2) * da2 / (da2 - da1);
+      }
+      if (tb0 > tb1) { float tmp2 = tb0; tb0 = tb1; tb1 = tmp2; }
+      // Intervals must overlap strictly (not just touch at a point/edge).
+      if (ta1 <= tb0 + 1e-6f || tb1 <= ta0 + 1e-6f) continue;
       q.self_intersections++;
     }
   }

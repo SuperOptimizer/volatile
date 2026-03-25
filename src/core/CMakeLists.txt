@@ -12,6 +12,7 @@ add_library(volatile_core STATIC
   imgproc.c
   vol.c
   vol_write.c
+  vol_mirror.c
   cache.c
   compress4d.c
   profile.c

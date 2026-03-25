@@ -7,12 +7,16 @@
 #include "core/compress4d.h"
 #include "core/log.h"
 
+#include <blosc2.h>
 #include <errno.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #define DEFAULT_MAX_CACHE_BYTES  (INT64_C(50) * 1024 * 1024 * 1024)
 #define DEFAULT_PREFETCH_RADIUS  2
@@ -29,6 +33,10 @@ struct vol_mirror {
   volume       *local_vol;               // opened after first cache write
   volume       *remote_vol;              // opened from remote URL
   threadpool   *pool;                    // background prefetch pool
+
+  // detected once in vol_mirror_new
+  bool          remote_is_c4d;          // remote codec is compress4d
+  bool          remote_is_volt_server;  // remote speaks volatile TCP binary protocol
 
   pthread_mutex_t lock;
   int   chunks_cached;
@@ -100,34 +108,52 @@ static bool write_chunk_to_disk(const char *path, const uint8_t *data, size_t sz
 // Returns malloc'd decompressed bytes (caller frees), sets *out_sz.
 // ---------------------------------------------------------------------------
 
+// Returns true if the URL is HTTP/HTTPS/S3, false if it's a local path.
+static bool is_remote_url(const char *url) {
+  return strncmp(url, "http://",  7) == 0 ||
+         strncmp(url, "https://", 8) == 0 ||
+         strncmp(url, "s3://",    5) == 0;
+}
+
 static uint8_t *fetch_and_cache(vol_mirror *m, int level,
                                  const int64_t *coords, int ndim,
                                  size_t *out_sz) {
   char url[VOL_PATH_MAX * 2];
   chunk_remote_url(m, level, coords, ndim, url, sizeof(url));
 
-  http_response *resp = http_get(url, FETCH_TIMEOUT_MS);
-  if (!resp) {
-    pthread_mutex_lock(&m->lock);
-    m->cache_misses++;
-    pthread_mutex_unlock(&m->lock);
-    return NULL;
-  }
-  if (resp->status_code != 200 || !resp->data || resp->size == 0) {
-    http_response_free(resp);
-    pthread_mutex_lock(&m->lock);
-    m->cache_misses++;
-    pthread_mutex_unlock(&m->lock);
-    return NULL;
-  }
-
-  // store compressed bytes to disk
   char disk_path[VOL_PATH_MAX];
   chunk_cache_path(m, level, coords, ndim, disk_path, sizeof(disk_path));
-  write_chunk_to_disk(disk_path, resp->data, resp->size);
 
-  uint8_t *raw  = resp->data;
-  size_t   rsz  = resp->size;
+  uint8_t *raw = NULL;
+  size_t   rsz = 0;
+
+  if (is_remote_url(m->cfg.remote_url)) {
+    http_response *resp = http_get(url, FETCH_TIMEOUT_MS);
+    if (!resp || resp->status_code != 200 || !resp->data || resp->size == 0) {
+      http_response_free(resp);
+      pthread_mutex_lock(&m->lock);
+      m->cache_misses++;
+      pthread_mutex_unlock(&m->lock);
+      return NULL;
+    }
+    // store to disk
+    write_chunk_to_disk(disk_path, resp->data, resp->size);
+    raw = resp->data;
+    rsz = resp->size;
+    resp->data = NULL;  // take ownership
+    http_response_free(resp);
+  } else {
+    // local "remote": url is a filesystem path — read it directly
+    raw = vol_read_file_bytes(url, &rsz);
+    if (!raw || rsz == 0) {
+      free(raw);
+      pthread_mutex_lock(&m->lock);
+      m->cache_misses++;
+      pthread_mutex_unlock(&m->lock);
+      return NULL;
+    }
+    write_chunk_to_disk(disk_path, raw, rsz);
+  }
 
   // try blosc decompress; if it fails treat as raw
   uint8_t *decompressed = NULL;
@@ -149,7 +175,7 @@ static uint8_t *fetch_and_cache(vol_mirror *m, int level,
     *out_sz = (size_t)nbytes;
   }
 
-  http_response_free(resp);
+  free(raw);
 
   pthread_mutex_lock(&m->lock);
   m->chunks_cached++;
@@ -207,6 +233,153 @@ static void schedule_prefetch(vol_mirror *m, int level, const int64_t *center,
 }
 
 // ---------------------------------------------------------------------------
+// Codec / protocol detection
+// ---------------------------------------------------------------------------
+
+// Returns true if the remote volume's level-0 codec is compress4d
+// (compressor_id == "compress4d" for v2, or codec name "compress4d" for v3).
+static bool detect_compress4d(const volume *v) {
+  if (!v) return false;
+  const zarr_level_meta *m = vol_level_meta(v, 0);
+  if (!m) return false;
+  return strcmp(m->compressor_id, "compress4d") == 0;
+}
+
+// Probe whether the host:port at the base of the URL speaks the volatile
+// binary TCP protocol. Opens a TCP connection, sends a PING header, and
+// checks whether the server responds with a PONG bearing PROTOCOL_MAGIC.
+// Returns false immediately for non-HTTP URLs or parse failures.
+static bool probe_volatile_server(const char *url) {
+  // only probe http/https URLs (not local paths or s3://)
+  if (strncmp(url, "http://",  7) != 0 &&
+      strncmp(url, "https://", 8) != 0) return false;
+
+  parsed_url pu;
+  if (!url_parse(url, &pu)) return false;
+
+  // default TCP port for volatile server (same as HTTP default; server listens
+  // on both HTTP for zarr metadata and TCP for binary protocol on port+1)
+  int port = pu.port > 0 ? pu.port + 1 : 27183;  // 27182 HTTP -> 27183 binary
+
+  struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+  struct addrinfo *res = NULL;
+  char portstr[8];
+  snprintf(portstr, sizeof(portstr), "%d", port);
+  if (getaddrinfo(pu.host, portstr, &hints, &res) != 0) return false;
+
+  int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  bool ok = false;
+  if (fd >= 0) {
+    // non-blocking connect with short timeout via select
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    if (connect(fd, res->ai_addr, res->ai_addrlen) == 0) {
+      // send a minimal PING: 12-byte header with PROTOCOL_MAGIC
+      uint8_t hdr[12] = {0};
+      uint32_t magic = 0x564F4C54;  // "VOLT" big-endian
+      hdr[0] = (uint8_t)(magic >> 24); hdr[1] = (uint8_t)(magic >> 16);
+      hdr[2] = (uint8_t)(magic >> 8);  hdr[3] = (uint8_t)(magic);
+      // msg_type MSG_PING = 0, flags = 0, payload_len = 0
+      send(fd, hdr, sizeof(hdr), 0);
+
+      // wait up to 1s for a PONG
+      fd_set rfds; FD_ZERO(&rfds); FD_SET(fd, &rfds);
+      if (select(fd + 1, &rfds, NULL, NULL, &tv) > 0) {
+        uint8_t resp[12] = {0};
+        ssize_t n = recv(fd, resp, sizeof(resp), 0);
+        if (n == 12) {
+          uint32_t m2 = ((uint32_t)resp[0] << 24) | ((uint32_t)resp[1] << 16) |
+                        ((uint32_t)resp[2] << 8)  |  (uint32_t)resp[3];
+          uint16_t mt = (uint16_t)(((uint16_t)resp[4] << 8) | resp[5]);
+          ok = (m2 == magic) && (mt == 1 /* MSG_PONG */);
+        }
+      }
+    }
+    close(fd);
+  }
+  freeaddrinfo(res);
+  return ok;
+}
+
+// Public accessors — check cached detection results.
+bool vol_mirror_remote_is_compress4d(const vol_mirror *m) {
+  return m && m->remote_is_c4d;
+}
+
+bool vol_mirror_remote_is_volatile_server(const vol_mirror *m) {
+  return m && m->remote_is_volt_server;
+}
+
+// ---------------------------------------------------------------------------
+// Binary-protocol chunk fetch (volatile TCP protocol)
+// ---------------------------------------------------------------------------
+
+// Fetch a chunk over the volatile binary TCP protocol.
+// Returns malloc'd raw bytes (already in the server's native encoding),
+// or NULL on failure.
+static uint8_t *fetch_via_binary_protocol(const vol_mirror *m, int level,
+                                           const int64_t *coords, int ndim,
+                                           size_t *out_sz) {
+  parsed_url pu;
+  if (!url_parse(m->cfg.remote_url, &pu)) return NULL;
+  int port = pu.port > 0 ? pu.port + 1 : 27183;
+
+  struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+  struct addrinfo *res  = NULL;
+  char portstr[8]; snprintf(portstr, sizeof(portstr), "%d", port);
+  if (getaddrinfo(pu.host, portstr, &hints, &res) != 0) return NULL;
+
+  int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  uint8_t *result = NULL;
+  if (fd >= 0 && connect(fd, res->ai_addr, res->ai_addrlen) == 0) {
+    // Build MSG_CHUNK_REQ payload: level(4) + ndim(4) + coords[ndim](8 each)
+    size_t payload_sz = (size_t)(8 + ndim * 8);
+    uint8_t *payload  = malloc(payload_sz);
+    if (payload) {
+      payload[0] = (uint8_t)(level >> 24); payload[1] = (uint8_t)(level >> 16);
+      payload[2] = (uint8_t)(level >>  8); payload[3] = (uint8_t)(level);
+      payload[4] = (uint8_t)(ndim  >> 24); payload[5] = (uint8_t)(ndim  >> 16);
+      payload[6] = (uint8_t)(ndim  >>  8); payload[7] = (uint8_t)(ndim);
+      for (int d = 0; d < ndim; d++) {
+        uint64_t cv = (uint64_t)coords[d];
+        for (int b = 7; b >= 0; b--) { payload[8 + d*8 + b] = (uint8_t)(cv & 0xff); cv >>= 8; }
+      }
+      // header: magic + MSG_CHUNK_REQ(4) + flags(0) + payload_len
+      uint8_t hdr[12];
+      uint32_t magic = 0x564F4C54;
+      hdr[0]=(uint8_t)(magic>>24); hdr[1]=(uint8_t)(magic>>16);
+      hdr[2]=(uint8_t)(magic>>8);  hdr[3]=(uint8_t)(magic);
+      hdr[4]=0; hdr[5]=4; // MSG_CHUNK_REQ = 4
+      hdr[6]=0; hdr[7]=0; // flags
+      uint32_t plen = (uint32_t)payload_sz;
+      hdr[8]=(uint8_t)(plen>>24); hdr[9]=(uint8_t)(plen>>16);
+      hdr[10]=(uint8_t)(plen>>8); hdr[11]=(uint8_t)(plen);
+      send(fd, hdr, 12, 0);
+      send(fd, payload, payload_sz, 0);
+      free(payload);
+
+      // receive response header
+      uint8_t rhdr[12] = {0};
+      ssize_t n = recv(fd, rhdr, 12, MSG_WAITALL);
+      if (n == 12) {
+        uint32_t rlen = ((uint32_t)rhdr[8]<<24)|((uint32_t)rhdr[9]<<16)|
+                        ((uint32_t)rhdr[10]<<8)|(uint32_t)rhdr[11];
+        if (rlen > 0 && rlen < (uint32_t)(256 * 1024 * 1024)) {
+          result = malloc(rlen);
+          if (result) {
+            ssize_t got = recv(fd, result, rlen, MSG_WAITALL);
+            if ((size_t)got == rlen) *out_sz = rlen;
+            else { free(result); result = NULL; }
+          }
+        }
+      }
+    }
+    close(fd);
+  }
+  freeaddrinfo(res);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // vol_mirror_new / free
 // ---------------------------------------------------------------------------
 
@@ -249,6 +422,18 @@ vol_mirror *vol_mirror_new(mirror_config cfg) {
     free(m);
     return NULL;
   }
+
+  // detect remote codec and protocol
+  m->remote_is_c4d = detect_compress4d(m->remote_vol);
+  // probe binary protocol only for HTTP URLs and when preferred (default true unless
+  // caller explicitly set prefer_binary_protocol = false)
+  bool try_binary = cfg.prefer_binary_protocol || !cfg.force_recompress;
+  m->remote_is_volt_server = try_binary && probe_volatile_server(cfg.remote_url);
+
+  if (m->remote_is_c4d)
+    LOG_INFO("vol_mirror: remote codec is compress4d — raw chunks will be cached as-is");
+  if (m->remote_is_volt_server)
+    LOG_INFO("vol_mirror: volatile binary protocol detected — will use TCP streaming");
 
   // try to open existing local cache (may not exist yet)
   m->local_vol = vol_open(m->local_zarr);

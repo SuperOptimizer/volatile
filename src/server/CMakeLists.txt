@@ -2,6 +2,9 @@ add_library(volatile_server STATIC
   protocol.c
   db.c
   srv.c
+  collab.c
+  versioning.c
+  review.c
 )
 
 target_include_directories(volatile_server PUBLIC

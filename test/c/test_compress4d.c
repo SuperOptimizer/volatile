@@ -254,6 +254,94 @@ TEST test_residual_roundtrip_large(void) {
   PASS();
 }
 
+TEST test_ans_roundtrip_large_64k(void) {
+  // 64KB with pseudo-random byte distribution.
+  size_t len = 65536;
+  uint8_t *src = malloc(len);
+  ASSERT(src != NULL);
+  uint32_t lcg = 0xdeadbeef;
+  for (size_t i = 0; i < len; i++) {
+    lcg = lcg * 1664525u + 1013904223u;
+    src[i] = (uint8_t)(lcg >> 24);
+  }
+
+  ans_table *t = ans_table_build(src, len);
+  ASSERT(t != NULL);
+  size_t enc_len = 0;
+  uint8_t *enc = ans_encode(t, src, len, &enc_len);
+  ASSERT(enc != NULL);
+  uint8_t *dec = ans_decode(t, enc, enc_len, len);
+  ASSERT(dec != NULL);
+  ASSERT_MEM_EQ(src, dec, len);
+
+  free(src); free(enc); free(dec);
+  ans_table_free(t);
+  PASS();
+}
+
+TEST test_ans_roundtrip_all_zeros(void) {
+  size_t len = 1024;
+  uint8_t *src = calloc(len, 1);
+  ASSERT(src != NULL);
+
+  ans_table *t = ans_table_build(src, len);
+  ASSERT(t != NULL);
+  size_t enc_len = 0;
+  uint8_t *enc = ans_encode(t, src, len, &enc_len);
+  ASSERT(enc != NULL);
+  uint8_t *dec = ans_decode(t, enc, enc_len, len);
+  ASSERT(dec != NULL);
+  ASSERT_MEM_EQ(src, dec, len);
+
+  free(src); free(enc); free(dec);
+  ans_table_free(t);
+  PASS();
+}
+
+TEST test_ans_roundtrip_single_byte(void) {
+  uint8_t src[1] = {0x7F};
+  ans_table *t = ans_table_build(src, 1);
+  ASSERT(t != NULL);
+  size_t enc_len = 0;
+  uint8_t *enc = ans_encode(t, src, 1, &enc_len);
+  ASSERT(enc != NULL);
+  uint8_t *dec = ans_decode(t, enc, enc_len, 1);
+  ASSERT(dec != NULL);
+  ASSERT_EQ(src[0], dec[0]);
+
+  free(enc); free(dec);
+  ans_table_free(t);
+  PASS();
+}
+
+TEST test_ans_empty_input(void) {
+  // Empty build should either return NULL or handle gracefully (no crash).
+  ans_table *t = ans_table_build(NULL, 0);
+  if (t) ans_table_free(t);
+  // Just verifying no crash.
+  PASS();
+}
+
+TEST test_residual_all_same_value(void) {
+  size_t len = 256;
+  float *res = malloc(len * sizeof(float));
+  ASSERT(res != NULL);
+  for (size_t i = 0; i < len; i++) res[i] = 3.5f;
+
+  float scale = 0.1f;
+  size_t enc_len = 0;
+  uint8_t *enc = compress4d_encode_residual(res, len, scale, &enc_len);
+  ASSERT(enc != NULL);
+  float *out = malloc(len * sizeof(float));
+  ASSERT(out != NULL);
+  ASSERT(compress4d_decode_residual(enc, enc_len, len, scale, out));
+  for (size_t i = 0; i < len; i++)
+    ASSERT(fabsf(out[i] - res[i]) <= scale + 1e-4f);
+
+  free(res); free(enc); free(out);
+  PASS();
+}
+
 // ---------------------------------------------------------------------------
 // Suites + main
 // ---------------------------------------------------------------------------
@@ -264,6 +352,10 @@ SUITE(ans_suite) {
   RUN_TEST(test_ans_roundtrip_single_symbol);
   RUN_TEST(test_ans_roundtrip_large);
   RUN_TEST(test_ans_table_from_freqs_roundtrip);
+  RUN_TEST(test_ans_roundtrip_large_64k);
+  RUN_TEST(test_ans_roundtrip_all_zeros);
+  RUN_TEST(test_ans_roundtrip_single_byte);
+  RUN_TEST(test_ans_empty_input);
 }
 
 SUITE(lanczos_suite) {
@@ -276,6 +368,7 @@ SUITE(residual_suite) {
   RUN_TEST(test_residual_roundtrip_zeros);
   RUN_TEST(test_residual_roundtrip_values);
   RUN_TEST(test_residual_roundtrip_large);
+  RUN_TEST(test_residual_all_same_value);
 }
 
 GREATEST_MAIN_DEFS();

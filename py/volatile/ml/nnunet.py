@@ -60,12 +60,11 @@ class _Conv:
   def __call__(self, x: "Tensor") -> "Tensor":
     if self.conv_op == '3d':
       B, C, D, H, W = x.shape
-      # merge B and D, apply 2D conv, unmerge
-      x = x.reshape(B * D, C, H, W)
-      x = self._c(x)
-      _, C2, H2, W2 = x.shape
-      D2 = D // self.stride_d if self.stride_d > 1 else D
-      return x.reshape(B, D2, C2, H2, W2).permute(0, 2, 1, 3, 4)
+      # merge B and D → (B*D, C, H, W), apply 2D conv, split back
+      x2 = x.reshape(B * D, C, H, W)
+      x2 = self._c(x2)
+      BD, C2, H2, W2 = x2.shape   # BD == B*D (stride only affects H/W here)
+      return x2.reshape(B, D, C2, H2, W2).permute(0, 2, 1, 3, 4)  # (B,C2,D,H2,W2)
     return self._c(x)
 
 
@@ -83,12 +82,10 @@ class _ConvTranspose:
   def __call__(self, x: "Tensor") -> "Tensor":
     if self.conv_op == '3d':
       B, C, D, H, W = x.shape
-      x = x.reshape(B * D, C, H, W)
-      x = self._ct(x)
-      _, C2, H2, W2 = x.shape
-      D2 = D * self.stride
-      return x.reshape(B, D, C2, H2, W2).interpolate((D2, H2, W2)).permute(0, 2, 1, 3, 4) if D2 != D \
-        else x.reshape(B, D, C2, H2, W2).permute(0, 2, 1, 3, 4)
+      x2 = x.reshape(B * D, C, H, W)
+      x2 = self._ct(x2)
+      _, C2, H2, W2 = x2.shape
+      return x2.reshape(B, D, C2, H2, W2).permute(0, 2, 1, 3, 4)  # (B,C2,D,H2,W2)
     return self._ct(x)
 
 

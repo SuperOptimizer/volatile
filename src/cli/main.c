@@ -19,6 +19,7 @@
 #include "cli/cli_diff.h"
 #include "cli/cli_transform.h"
 #include "cli/cli_video.h"
+#include "cli/cli_mirror.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,7 @@ static void print_usage(void) {
   puts("  threshold  <zarr> --output <out> [--low N] [--high N]   Binarize/clip voxels");
   puts("  merge      <zarr1> <zarr2> --output <out> [--op max|add|mask]  Element-wise merge");
   puts("  extract    <zarr> --bbox z0,y0,x0,z1,y1,x1 --output <out>     Sub-region crop");
+  puts("  mirror     <remote_url> [--cache-dir DIR] [--rechunk Z,Y,X] [--compress4d]");
   puts("  metrics  <surface>                            Surface area, curvature, smoothness");
   puts("  mask     <surface> --volume <vol> --output <mask>  Binary mask from surface");
   puts("  inpaint  <image> --mask <mask> --output <out>  Telea inpainting for hole-filling");
@@ -193,6 +195,7 @@ int main(int argc, char **argv) {
   if (strcmp(cmd, "threshold")  == 0) return cmd_threshold(sub_argc, sub_argv);
   if (strcmp(cmd, "merge")      == 0) return cmd_merge(sub_argc, sub_argv);
   if (strcmp(cmd, "extract")    == 0) return cmd_extract(sub_argc, sub_argv);
+  if (strcmp(cmd, "mirror")     == 0) return cmd_mirror(sub_argc, sub_argv);
   if (strcmp(cmd, "metrics")    == 0) return cmd_metrics(sub_argc, sub_argv);
   if (strcmp(cmd, "mask")       == 0) return cmd_mask(sub_argc, sub_argv);
   if (strcmp(cmd, "inpaint")    == 0) return cmd_inpaint(sub_argc, sub_argv);
