@@ -94,41 +94,25 @@ static float cost(const float *r, int nr) {
 
 // Finite-difference Jacobian (central differences, eps=1e-5)
 static void fd_jacobian(const float *p, int np, float *J, int nr,
-                        residual_fn res_fn, void *ctx, float *r_fwd, float *r_bwd) {
+                        residual_fn res_fn, void *ctx) {
   const float eps = 1e-5f;
-  float *pp = (float *)p;  // temporarily perturb in place, then restore
-  // We need a mutable copy — borrow r_fwd/r_bwd as scratch for perturbed params
-  float *pm = r_fwd;   // reuse as p+eps buffer (size nr >= np for typical usage)
-  float *mm = r_bwd;   // reuse as p-eps buffer
-  // For safety allocate local if nr < np
-  float *p_scratch = NULL;
-  float *r1 = NULL, *r2 = NULL;
-  bool alloc = (nr < np);
-  if (alloc) {
-    p_scratch = malloc((size_t)np * sizeof(float));
-    r1        = malloc((size_t)nr * sizeof(float));
-    r2        = malloc((size_t)nr * sizeof(float));
-    if (!p_scratch || !r1 || !r2) { free(p_scratch); free(r1); free(r2); return; }
-    pm = r1; mm = r2;
-    (void)p_scratch;
-  }
-
   float *ptmp = malloc((size_t)np * sizeof(float));
-  if (!ptmp) { if (alloc) { free(r1); free(r2); free(p_scratch); } return; }
+  float *rp   = malloc((size_t)nr * sizeof(float));
+  float *rm   = malloc((size_t)nr * sizeof(float));
+  if (!ptmp || !rp || !rm) { free(ptmp); free(rp); free(rm); return; }
   memcpy(ptmp, p, (size_t)np * sizeof(float));
 
   for (int j = 0; j < np; j++) {
-    ptmp[j] = pp[j] + eps;
-    res_fn(ptmp, np, pm, nr, ctx);
-    ptmp[j] = pp[j] - eps;
-    res_fn(ptmp, np, mm, nr, ctx);
-    ptmp[j] = pp[j];
-    float inv2e = 1.0f / (2.0f * eps);
+    ptmp[j] = p[j] + eps;
+    res_fn(ptmp, np, rp, nr, ctx);
+    ptmp[j] = p[j] - eps;
+    res_fn(ptmp, np, rm, nr, ctx);
+    ptmp[j] = p[j];
+    float inv2e = 0.5f / eps;
     for (int i = 0; i < nr; i++)
-      J[i * np + j] = (pm[i] - mm[i]) * inv2e;
+      J[i * np + j] = (rp[i] - rm[i]) * inv2e;
   }
-  free(ptmp);
-  if (alloc) { free(r1); free(r2); free(p_scratch); }
+  free(ptmp); free(rp); free(rm);
 }
 
 // Cholesky solve: A*x = b, A is np x np symmetric positive semi-definite.
@@ -183,7 +167,7 @@ int optimizer_solve(optimizer *o, float *params,
     if (jac_fn)
       jac_fn(params, np, o->J, nr, ctx);
     else
-      fd_jacobian(params, np, o->J, nr, res_fn, ctx, o->r_try, o->p_try);
+      fd_jacobian(params, np, o->J, nr, res_fn, ctx);
 
     // JtJ = J^T J,  Jtr = J^T r
     for (int i = 0; i < np; i++) {

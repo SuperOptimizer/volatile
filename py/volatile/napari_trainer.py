@@ -28,15 +28,12 @@ except ImportError:
   _HAS_NAPARI = False
 
 try:
-  from tinygrad.nn.state import safe_load, safe_save, load_state_dict, get_state_dict
-  from tinygrad import Tensor
+  import tinygrad as _tinygrad  # noqa: F401
   _HAS_TINYGRAD = True
 except ImportError:
   _HAS_TINYGRAD = False
 
-from .ml.model import UNet3D
-from .ml.train import train_one_epoch
-from .ml.infer import tiled_infer
+# ml imports are deferred to method bodies so this module loads even without tinygrad
 
 log = logging.getLogger(__name__)
 
@@ -93,16 +90,21 @@ class NapariTrainer:
       self._volume = _load_volume(self.volume_path)
     return self._volume
 
-  def _ensure_model(self) -> "UNet3D":
+  def _ensure_model(self):
     if self._model is None:
-      log.info("Creating default UNet3D (in_channels=1, out_channels=2)")
-      self._model = UNet3D(in_channels=1, out_channels=2)
+      if not _HAS_TINYGRAD:
+        raise ImportError("tinygrad is required; install it with: pip install tinygrad")
+      from .ml.model import UNet
+      log.info("Creating default UNet (in_ch=1, out_ch=2)")
+      self._model = UNet(in_ch=1, out_ch=2)
     return self._model
 
-  def _load_model(self, path: str) -> "UNet3D":
+  def _load_model(self, path: str):
     if not _HAS_TINYGRAD:
       raise ImportError("tinygrad is required to load a model")
-    model = UNet3D(in_channels=1, out_channels=2)
+    from .ml.model import UNet
+    from tinygrad.nn.state import safe_load, load_state_dict
+    model = UNet(in_ch=1, out_ch=2)
     state = safe_load(path)
     load_state_dict(model, state)
     log.info("Loaded model from %s", path)
@@ -111,6 +113,7 @@ class NapariTrainer:
   def _save_model(self, path: str) -> None:
     if not _HAS_TINYGRAD:
       raise ImportError("tinygrad is required to save a model")
+    from tinygrad.nn.state import safe_save, get_state_dict
     state = get_state_dict(self._model)
     safe_save(state, path)
     log.info("Saved model to %s", path)
@@ -171,6 +174,7 @@ class NapariTrainer:
     log.info("Training for %d epochs on volume %s", epochs, self.volume_path)
     from .ml.loss import DiceCELoss
     from .ml.data import PatchDataset
+    from .ml.train import train_one_epoch
 
     dataset = PatchDataset(vol, labels)
     loss_fn = DiceCELoss()
@@ -196,6 +200,7 @@ class NapariTrainer:
     model = self._ensure_model()
 
     log.info("Running tiled inference…")
+    from .ml.infer import tiled_infer
     # tiled_infer expects (H, W) or (D, H, W) float32
     pred = tiled_infer(model, vol)
     self._prediction = pred

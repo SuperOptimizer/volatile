@@ -683,7 +683,7 @@ uint8_t *vol_read_chunk(const volume *v, int level, const int64_t *chunk_coords,
 
   size_t raw_size = 0;
   uint8_t *raw = read_file_bytes(path, &raw_size);
-  if (!raw) return NULL;
+  if (!raw) { fprintf(stderr, "DBG2: read_file_bytes NULL for '%s'\n", path); return NULL; }
 
   size_t decomp_size = 0;
   uint8_t *decomp = decompress_buf(m, raw, raw_size, &decomp_size);

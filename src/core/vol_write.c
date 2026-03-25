@@ -431,7 +431,7 @@ bool vol_build_pyramid(volume *v, int max_levels) {
           int64_t cc[3] = {cz, cy, cx};
           size_t chunk_sz = 0;
           uint8_t *chunk = vol_read_chunk(v, lvl - 1, cc, &chunk_sz);
-          if (!chunk) continue;
+          if (!chunk) { fprintf(stderr, "DBG: vol_read_chunk NULL for lvl=%d cc=(%lld,%lld,%lld)\n", lvl-1, (long long)cz, (long long)cy, (long long)cx); continue; }
 
           // scatter into src_vol
           int64_t oz = cz * prev->chunk_shape[0];

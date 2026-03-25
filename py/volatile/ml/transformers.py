@@ -810,7 +810,7 @@ class Vesuvius3dViTModel:
     self.return_tokens = return_tokens
     self.feat_shape: Tuple[int, int, int] = tuple(s // patch_size for s in input_shape)  # type: ignore[assignment]
 
-    self.patch_embed = nn.Conv3d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+    self.patch_embed = _PatchEmbed3d(in_channels, embed_dim, patch_size)
     self.vit = VisionTransformer(
       embed_dim=embed_dim, depth=depth, num_heads=num_heads,
       feat_shape=self.feat_shape, use_abs_pos_emb=True, use_rope=True,
