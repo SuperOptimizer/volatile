@@ -266,29 +266,33 @@ class MeanTeacherTrainer:
         lbl_img = self._to_tensor(lbl_img_np)
         lbl_mask = Tensor(lbl_mask_np)
 
+        # ---- consistency loss: get teacher output first (no grad needed) ----
+        # Run teacher forward BEFORE student forward so that apply_shadow/restore
+        # don't touch the tensors involved in the student's computation graph.
+        teacher_out_np: Optional[np.ndarray] = None
+        if cons_w > 0:
+          noise = np.random.randn(*unl_img_np.shape).astype(np.float32) * self.noise_scale
+          noisy_unl_np = unl_img_np + noise
+          noisy_unl = self._to_tensor(noisy_unl_np)
+          self._teacher_ema.apply_shadow()
+          Tensor.training = False
+          teacher_out_np = self.student(noisy_unl).numpy()
+          Tensor.training = True
+          self._teacher_ema.restore()
+
         # ---- supervised loss on labeled data ----
         student_lbl_out = self.student(lbl_img)
         sup_loss = self.sup_loss_fn(student_lbl_out, lbl_mask)
 
         # ---- consistency loss on unlabeled data ----
         cons_loss_val: "Tensor"
-        if cons_w > 0:
+        if cons_w > 0 and teacher_out_np is not None:
           unl_img = self._to_tensor(unl_img_np)
           student_unl_out = self.student(unl_img)
-
-          # Teacher forward: apply shadow weights, run forward (no grad), restore
-          noise = np.random.randn(*unl_img_np.shape).astype(np.float32) * self.noise_scale
-          noisy_unl = self._to_tensor(unl_img_np + noise)
-          self._teacher_ema.apply_shadow()
-          Tensor.training = False
-          teacher_out = self.student(noisy_unl)
-          Tensor.training = True
-          self._teacher_ema.restore()
-
+          teacher_out = Tensor(teacher_out_np)
           cons_loss_val = self._consistency_loss(student_unl_out, teacher_out)
           total_loss = sup_loss + cons_w * cons_loss_val
         else:
-          # Create a zero tensor directly (no graph)
           cons_loss_val = Tensor([0.0])
           total_loss = sup_loss
 

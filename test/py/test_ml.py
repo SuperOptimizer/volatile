@@ -827,3 +827,332 @@ def test_trainer_with_patch_dataset():
   history = trainer.train()
   assert len(history["train_loss"]) == 2
   assert all(np.isfinite(v) for v in history["train_loss"])
+
+
+# ---------------------------------------------------------------------------
+# semi_supervised.py — Mean Teacher tests
+# ---------------------------------------------------------------------------
+
+from volatile.ml.semi_supervised import (
+  sigmoid_rampup, linear_rampup, build_two_stream_batches, MeanTeacherTrainer
+)
+
+
+def test_sigmoid_rampup_bounds():
+  # At current=0: phase=1.0, value = exp(-5) ≈ 0.0067 (near zero)
+  assert sigmoid_rampup(0.0, 10.0) < 0.01
+  assert sigmoid_rampup(10.0, 10.0) == pytest.approx(1.0, rel=1e-5)
+  assert 0.0 < sigmoid_rampup(5.0, 10.0) < 1.0
+
+
+def test_sigmoid_rampup_zero_length():
+  assert sigmoid_rampup(0.0, 0.0) == 1.0
+
+
+def test_linear_rampup_bounds():
+  assert linear_rampup(0.0, 10.0) == pytest.approx(0.0, abs=1e-9)
+  assert linear_rampup(10.0, 10.0) == pytest.approx(1.0, rel=1e-5)
+  assert linear_rampup(20.0, 10.0) == pytest.approx(1.0)
+
+
+def test_build_two_stream_batches_shape():
+  rng = np.random.default_rng(0)
+  imgs = [np.random.rand(1, 16, 16).astype(np.float32) for _ in range(8)]
+  masks = [np.random.randint(0, 2, (16, 16)).astype(np.int32) for _ in range(8)]
+  labeled = list(zip(imgs, masks))
+  unlabeled = [np.random.rand(1, 16, 16).astype(np.float32) for _ in range(8)]
+  batches = build_two_stream_batches(labeled, unlabeled, labeled_batch_size=2, unlabeled_batch_size=2, rng=rng)
+  assert len(batches) > 0
+  b = batches[0]
+  assert "image" in b and "label" in b and "n_labeled" in b
+  # 2 labeled + 2 unlabeled = 4 images
+  assert b["image"].shape[0] == 4
+  assert b["n_labeled"] == 2
+
+
+def test_mean_teacher_trainer_two_epochs():
+  """Mean Teacher should run 2 epochs and produce finite history losses."""
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+
+  def _lbl_loader():
+    for _ in range(2):
+      imgs = np.random.rand(1, 1, 16, 16).astype(np.float32)
+      masks = np.random.randint(0, 2, (1, 16, 16)).astype(np.int32)
+      yield imgs, masks
+
+  def _unl_loader():
+    for _ in range(2):
+      yield np.random.rand(1, 1, 16, 16).astype(np.float32)
+
+  trainer = MeanTeacherTrainer(
+    student=model,
+    labeled_loader=_lbl_loader(),
+    unlabeled_loader=_unl_loader(),
+    num_epochs=2,
+    consistency_rampup=1.0,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert "train_sup_loss" in history
+  assert "train_cons_loss" in history
+  assert len(history["train_sup_loss"]) == 2
+  assert all(np.isfinite(v) for v in history["train_sup_loss"])
+
+
+def test_mean_teacher_trainer_teacher_weights():
+  """Teacher weights dict should be populated after training."""
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+
+  def _lbl():
+    yield np.random.rand(1, 1, 16, 16).astype(np.float32), np.zeros((1, 16, 16), dtype=np.int32)
+
+  def _unl():
+    yield np.random.rand(1, 1, 16, 16).astype(np.float32)
+
+  trainer = MeanTeacherTrainer(
+    student=model,
+    labeled_loader=_lbl(),
+    unlabeled_loader=_unl(),
+    num_epochs=1,
+    verbose=False,
+  )
+  trainer.train()
+  weights = trainer.teacher_weights
+  assert isinstance(weights, dict)
+  assert len(weights) > 0
+
+
+# ---------------------------------------------------------------------------
+# self_supervised.py — MAE tests
+# ---------------------------------------------------------------------------
+
+from volatile.ml.self_supervised import (
+  patchify, unpatchify, random_mask, make_patch_grid,
+  MAEEncoder, MAEDecoder, MaskedAutoencoder, mae_loss, MAEPretrainer
+)
+
+
+def test_make_patch_grid():
+  nh, nw, ph, pw = make_patch_grid(64, 64, 16, 16)
+  assert nh == 4 and nw == 4 and ph == 16 and pw == 16
+
+
+def test_random_mask_ratio():
+  rng = np.random.default_rng(42)
+  mask = random_mask(100, 0.75, rng)
+  assert mask.dtype == bool
+  assert mask.sum() == 75
+
+
+def test_patchify_shape():
+  img = np.random.rand(1, 32, 32).astype(np.float32)
+  patches = patchify(img, 8, 8)
+  assert patches.shape == (16, 1 * 8 * 8)  # 4x4 = 16 patches, 1*8*8 = 64 values each
+
+
+def test_patchify_unpatchify_roundtrip():
+  img = np.random.rand(1, 32, 32).astype(np.float32)
+  patches = patchify(img, 8, 8)
+  recon = unpatchify(patches, C=1, H=32, W=32, patch_h=8, patch_w=8)
+  assert recon.shape == (1, 32, 32)
+  assert np.allclose(img, recon, atol=1e-6)
+
+
+def test_mae_encoder_output_shape():
+  enc = MAEEncoder(in_channels=1, latent_channels=16, hidden_channels=16, depth=2)
+  x = Tensor.randn(1, 1, 32, 32)
+  z = enc(x)
+  assert z.shape == (1, 16, 32, 32)
+
+
+def test_mae_decoder_output_shape():
+  dec = MAEDecoder(latent_channels=16, out_channels=1, hidden_channels=16, depth=2)
+  z = Tensor.randn(1, 16, 32, 32)
+  out = dec(z)
+  assert out.shape == (1, 1, 32, 32)
+
+
+def test_masked_autoencoder_forward_shapes():
+  mae = MaskedAutoencoder(
+    in_channels=1, patch_h=8, patch_w=8, mask_ratio=0.75,
+    latent_channels=16, hidden_channels=16, encoder_depth=2, decoder_depth=2, seed=0,
+  )
+  x = Tensor.randn(1, 1, 32, 32)
+  recon, mask = mae(x)
+  assert recon.shape == (1, 1, 32, 32)
+  assert mask.shape == (1, 1, 32, 32)
+
+
+def test_masked_autoencoder_mask_ratio():
+  """About 75% of patch positions should be masked (zero)."""
+  mae = MaskedAutoencoder(
+    in_channels=1, patch_h=8, patch_w=8, mask_ratio=0.75,
+    latent_channels=8, hidden_channels=8, encoder_depth=1, decoder_depth=1, seed=1,
+  )
+  x = Tensor.ones(1, 1, 32, 32)
+  _, mask = mae(x)
+  mask_np = mask.numpy()
+  # fraction of zero pixels in the mask (= masked patches)
+  frac_masked = (mask_np == 0.0).mean()
+  assert 0.6 < frac_masked < 0.9
+
+
+def test_mae_loss_only_masked():
+  """mae_loss should be 0 when reconstruction is perfect."""
+  recon = Tensor.ones(1, 1, 16, 16)
+  original = Tensor.ones(1, 1, 16, 16)
+  mask = Tensor(np.zeros((1, 1, 16, 16), dtype=np.float32))  # all masked
+  loss = mae_loss(recon, original, mask)
+  assert float(loss.numpy()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_mae_pretrainer_loss_finite():
+  """MAEPretrainer should produce finite loss over 2 epochs."""
+  mae = MaskedAutoencoder(
+    in_channels=1, patch_h=8, patch_w=8, mask_ratio=0.75,
+    latent_channels=8, hidden_channels=8, encoder_depth=1, decoder_depth=1, seed=2,
+  )
+
+  def _loader():
+    for _ in range(2):
+      yield np.random.rand(1, 1, 32, 32).astype(np.float32)
+
+  pretrainer = MAEPretrainer(mae=mae, train_loader=_loader(), num_epochs=2, verbose=False)
+  history = pretrainer.train()
+  assert len(history["train_loss"]) == 2
+  assert all(np.isfinite(v) for v in history["train_loss"])
+
+
+def test_mae_pretrainer_encoder_state_dict():
+  mae = MaskedAutoencoder(
+    in_channels=1, patch_h=8, patch_w=8,
+    latent_channels=8, hidden_channels=8, encoder_depth=1, decoder_depth=1,
+  )
+
+  def _loader():
+    yield np.random.rand(1, 1, 32, 32).astype(np.float32)
+
+  pretrainer = MAEPretrainer(mae=mae, train_loader=_loader(), num_epochs=1, verbose=False)
+  pretrainer.train()
+  sd = pretrainer.encoder_state_dict()
+  assert isinstance(sd, dict)
+  assert len(sd) > 0
+  assert all(isinstance(v, np.ndarray) for v in sd.values())
+
+
+# ---------------------------------------------------------------------------
+# auxiliary.py — target generators and AuxTaskTrainer
+# ---------------------------------------------------------------------------
+
+from volatile.ml.auxiliary import (
+  structure_tensor_targets, surface_normal_targets, distance_transform_targets,
+  AuxHead, AuxTask, MSELoss, aux_weight_schedule, AuxTaskTrainer
+)
+
+
+def test_structure_tensor_targets_shape():
+  img = np.random.rand(32, 32).astype(np.float32)
+  out = structure_tensor_targets(img)
+  assert out.shape == (2, 32, 32)
+  assert out.dtype == np.float32
+  assert np.all(out >= 0.0) and np.all(out <= 1.0)
+
+
+def test_structure_tensor_targets_channel_input():
+  img = np.random.rand(1, 32, 32).astype(np.float32)
+  out = structure_tensor_targets(img)
+  assert out.shape == (2, 32, 32)
+
+
+def test_surface_normal_targets_shape():
+  img = np.random.rand(32, 32).astype(np.float32)
+  out = surface_normal_targets(img)
+  assert out.shape == (3, 32, 32)
+  assert out.dtype == np.float32
+
+
+def test_surface_normal_targets_channel_input():
+  img = np.random.rand(1, 32, 32).astype(np.float32)
+  out = surface_normal_targets(img)
+  assert out.shape == (3, 32, 32)
+
+
+def test_distance_transform_targets_shape():
+  label = np.zeros((32, 32), dtype=np.int32)
+  label[10:20, 10:20] = 1
+  out = distance_transform_targets(label)
+  assert out.shape == (1, 32, 32)
+  assert out.dtype == np.float32
+  assert np.all(out >= 0.0) and np.all(out <= 1.0)
+
+
+def test_aux_weight_schedule_initial():
+  w = aux_weight_schedule(0, 100, initial_weight=0.4, final_weight=0.0)
+  assert w == pytest.approx(0.4, rel=1e-5)
+
+
+def test_aux_weight_schedule_final():
+  w = aux_weight_schedule(100, 100, initial_weight=0.4, final_weight=0.0)
+  assert w == pytest.approx(0.0, abs=1e-9)
+
+
+def test_aux_weight_schedule_monotone():
+  weights = [aux_weight_schedule(e, 100, 0.4, 0.0) for e in range(101)]
+  assert all(weights[i] >= weights[i + 1] for i in range(len(weights) - 1))
+
+
+def test_aux_head_output_shape():
+  head = AuxHead(in_channels=8, out_channels=3)
+  x = Tensor.randn(2, 8, 16, 16)
+  out = head(x)
+  assert out.shape == (2, 3, 16, 16)
+
+
+def test_aux_task_trainer_runs():
+  """AuxTaskTrainer should run 2 epochs with finite primary and aux losses."""
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  head = AuxHead(in_channels=1, out_channels=2)  # attached to raw image
+  task = AuxTask(name="normals", head=head, loss_fn=MSELoss(), initial_weight=0.3, final_weight=0.0)
+
+  def _loader():
+    for _ in range(2):
+      imgs = np.random.rand(1, 1, 16, 16).astype(np.float32)
+      labels = np.random.randint(0, 2, (1, 16, 16)).astype(np.int32)
+      normals = np.random.rand(1, 2, 16, 16).astype(np.float32)
+      yield {"image": imgs, "label": labels, "normals": normals}
+
+  trainer = AuxTaskTrainer(
+    primary_model=model,
+    aux_tasks=[task],
+    train_loader=_loader(),
+    num_epochs=2,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert "train_primary_loss" in history
+  assert "train_normals_loss" in history
+  assert len(history["train_primary_loss"]) == 2
+  assert all(np.isfinite(v) for v in history["train_primary_loss"])
+
+
+def test_aux_task_trainer_predict_aux_shape():
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  head = AuxHead(in_channels=1, out_channels=3)
+  task = AuxTask(name="stnorm", head=head, loss_fn=MSELoss())
+
+  def _loader():
+    yield {"image": np.random.rand(1, 1, 16, 16).astype(np.float32),
+           "label": np.zeros((1, 16, 16), dtype=np.int32),
+           "stnorm": np.random.rand(1, 3, 16, 16).astype(np.float32)}
+
+  trainer = AuxTaskTrainer(
+    primary_model=model,
+    aux_tasks=[task],
+    train_loader=_loader(),
+    num_epochs=1,
+    verbose=False,
+  )
+  trainer.train()
+  preds = trainer.predict_aux(np.random.rand(1, 1, 16, 16).astype(np.float32))
+  assert "stnorm" in preds
+  assert preds["stnorm"].shape == (1, 3, 16, 16)

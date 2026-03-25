@@ -49,7 +49,7 @@ set(_gui_tests
   test_nk_widgets test_console test_plugin_mgr test_surface_panel
   test_neural_trace test_crosshair test_seg_growth test_approval_mask
   test_layout test_drawing test_seeding test_vol_selector test_window_range
-  test_toolbar test_slice_controller
+  test_toolbar test_slice_controller test_cred_dialog
 )
 
 # ---------------------------------------------------------------------------

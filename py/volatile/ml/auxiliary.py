@@ -75,7 +75,7 @@ def structure_tensor_targets(image_np: np.ndarray, sigma: float = 1.0) -> np.nda
     k1d = np.exp(-0.5 * (np.arange(-r, r + 1) / s) ** 2).astype(np.float32)
     k1d /= k1d.sum()
     out = np.apply_along_axis(lambda row: np.convolve(row, k1d, mode='same'), axis=1, arr=arr)
-    out = np.apply_along_axis(lambda col: np.convolve(col, k1d, mode='same'), axis=0, out)
+    out = np.apply_along_axis(lambda col: np.convolve(col, k1d, mode='same'), 0, out)
     return out
 
   Jxx = _gauss(gx * gx, sigma)

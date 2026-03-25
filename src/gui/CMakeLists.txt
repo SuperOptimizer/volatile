@@ -32,6 +32,7 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   window_range.c
   toolbar.c
   tool_runner.c
+  cred_dialog.c
 )
 
 target_include_directories(volatile_gui PUBLIC
