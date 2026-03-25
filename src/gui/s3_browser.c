@@ -659,10 +659,10 @@ bool s3_browser_render(s3_browser *b, struct nk_context *ctx) {
   collect_preview(b);
 
   struct nk_rect bounds = nk_rect(40, 40, (float)POPUP_W, (float)POPUP_H);
-  if (!nk_popup_begin(ctx, NK_POPUP_STATIC, "Open Remote Volume",
-                      NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_CLOSABLE,
-                      bounds)) {
+  if (!nk_begin(ctx, "Open Remote Volume", bounds,
+                NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_MOVABLE | NK_WINDOW_CLOSABLE)) {
     b->visible = false;
+    nk_end(ctx);
     return false;
   }
 
@@ -879,6 +879,6 @@ bool s3_browser_render(s3_browser *b, struct nk_context *ctx) {
   }
   nk_layout_row_end(ctx);
 
-  nk_popup_end(ctx);
+  nk_end(ctx);
   return b->confirmed;
 }
