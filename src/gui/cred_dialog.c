@@ -1,10 +1,11 @@
 #define _POSIX_C_SOURCE 200809L
+// NOTE: NK_IMPLEMENTATION is owned by app.c — include nuklear declaration-only here.
+// Include before cred_dialog.h so struct nk_context is fully typed at the
+// point where cred_dialog_render is declared.
+#include "nuklear.h"
 #include "gui/cred_dialog.h"
 #include "core/log.h"
 #include "core/json.h"
-
-// NOTE: NK_IMPLEMENTATION is owned by app.c — include nuklear declaration-only here.
-#include "nuklear.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -32,8 +33,8 @@ struct cred_dialog {
   int           region_len;
   int           endpoint_len;
 
-  bool          remember;
-  bool          show_secret;    // toggle "reveal password"
+  nk_bool       remember;      // nk_bool (int) for nk_checkbox_label compatibility
+  nk_bool       show_secret;   // toggle "reveal password"
 
   s3_credentials result;       // populated on submit; caller reads via get_creds
 };
