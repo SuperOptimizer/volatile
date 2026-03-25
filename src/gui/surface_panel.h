@@ -1,3 +1,4 @@
+// WIDGET TYPE: WINDOW — renders its own nk_begin/nk_end window, call OUTSIDE any nk_begin block.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

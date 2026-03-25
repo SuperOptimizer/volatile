@@ -61,6 +61,10 @@ void app_get_size(const app_state_t *s, int *w, int *h);
 // Return pixel/logical scale factor (>1 on high-DPI displays).
 float app_get_dpi_scale(const app_state_t *s);
 
+// Return the header font handle (larger, for titles). NULL if not available.
+struct nk_user_font;
+const struct nk_user_font *app_get_header_font(const app_state_t *s);
+
 // ---------------------------------------------------------------------------
 // Keyboard event callback
 // ---------------------------------------------------------------------------

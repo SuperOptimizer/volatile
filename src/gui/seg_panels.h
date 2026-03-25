@@ -1,3 +1,4 @@
+// WIDGET TYPE: CONTENT — call inside an nk_begin/nk_end block.
 #pragma once
 #include "core/geom.h"
 #include "gui/seg.h"

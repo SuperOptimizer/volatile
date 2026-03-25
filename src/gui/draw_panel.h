@@ -1,3 +1,4 @@
+// WIDGET TYPE: CONTENT — call inside an nk_begin/nk_end block.
 #pragma once
 #include "gui/drawing.h"
 #include <stdbool.h>

@@ -38,6 +38,7 @@ struct app_state {
   float          dpi_scale;        // pixel_w / win_w
   app_key_fn     key_fn;
   void          *key_ctx;
+  struct nk_font *font_header;
 };
 
 // ---------------------------------------------------------------------------
@@ -86,11 +87,66 @@ app_state_t *app_init(const app_config_t *cfg) {
   SDL_GetWindowSizeInPixels(win, &pw, &ph);
   float dpi = (lw > 0) ? (float)pw / (float)lw : 1.0f;
 
-  // Bake default font scaled to DPI
+  // Bake fonts: body (15px) + header (22px) scaled to DPI
   struct nk_font_atlas *atlas = nk_sdl_font_stash_begin(nk);
-  struct nk_font *font = nk_font_atlas_add_default(atlas, 13.0f * dpi, NULL);
+  struct nk_font *font_body = nk_font_atlas_add_default(atlas, 15.0f * dpi, NULL);
+  struct nk_font *font_header = nk_font_atlas_add_default(atlas, 22.0f * dpi, NULL);
   nk_sdl_font_stash_end(nk);
-  if (font) nk_style_set_font(nk, &font->handle);
+  if (font_body) nk_style_set_font(nk, &font_body->handle);
+
+  // Dark theme with accent colors
+  struct nk_color bg     = nk_rgb(30, 30, 35);
+  struct nk_color panel  = nk_rgb(40, 42, 48);
+  struct nk_color border = nk_rgb(60, 63, 70);
+  struct nk_color text   = nk_rgb(220, 222, 228);
+  struct nk_color accent = nk_rgb(75, 130, 220);
+  struct nk_color hover  = nk_rgb(90, 145, 235);
+  struct nk_color active = nk_rgb(55, 110, 200);
+  struct nk_color header_bg = nk_rgb(50, 55, 65);
+
+  nk->style.window.background            = bg;
+  nk->style.window.fixed_background      = nk_style_item_color(panel);
+  nk->style.window.border_color          = border;
+  nk->style.window.border                = 1.0f;
+  nk->style.window.header.normal         = nk_style_item_color(header_bg);
+  nk->style.window.header.hover          = nk_style_item_color(header_bg);
+  nk->style.window.header.active         = nk_style_item_color(header_bg);
+  nk->style.window.header.label_normal   = text;
+  nk->style.window.header.label_hover    = text;
+  nk->style.window.header.label_active   = text;
+  nk->style.window.header.padding        = nk_vec2(6, 4);
+  nk->style.window.padding               = nk_vec2(8, 6);
+  nk->style.window.spacing               = nk_vec2(6, 4);
+
+  nk->style.button.normal                = nk_style_item_color(accent);
+  nk->style.button.hover                 = nk_style_item_color(hover);
+  nk->style.button.active                = nk_style_item_color(active);
+  nk->style.button.text_normal           = nk_rgb(255, 255, 255);
+  nk->style.button.text_hover            = nk_rgb(255, 255, 255);
+  nk->style.button.text_active           = nk_rgb(255, 255, 255);
+  nk->style.button.border_color          = border;
+  nk->style.button.border                = 1.0f;
+  nk->style.button.rounding              = 4.0f;
+  nk->style.button.padding               = nk_vec2(8, 4);
+
+  nk->style.text.color                   = text;
+
+  nk->style.slider.bar_normal            = nk_rgb(50, 55, 65);
+  nk->style.slider.bar_hover             = nk_rgb(55, 60, 70);
+  nk->style.slider.bar_active            = nk_rgb(55, 60, 70);
+  nk->style.slider.cursor_normal         = nk_style_item_color(accent);
+  nk->style.slider.cursor_hover          = nk_style_item_color(hover);
+  nk->style.slider.cursor_active         = nk_style_item_color(active);
+
+  nk->style.edit.normal                  = nk_style_item_color(nk_rgb(35, 38, 45));
+  nk->style.edit.hover                   = nk_style_item_color(nk_rgb(40, 43, 50));
+  nk->style.edit.active                  = nk_style_item_color(nk_rgb(45, 48, 55));
+  nk->style.edit.text_normal             = text;
+  nk->style.edit.text_hover              = text;
+  nk->style.edit.text_active             = text;
+  nk->style.edit.border_color            = border;
+  nk->style.edit.border                  = 1.0f;
+  nk->style.edit.rounding                = 3.0f;
 
   app_state_t *s = malloc(sizeof(*s));
   REQUIRE(s != NULL, "out of memory");
@@ -103,6 +159,7 @@ app_state_t *app_init(const app_config_t *cfg) {
   s->pixel_w      = pw;
   s->pixel_h      = ph;
   s->dpi_scale    = dpi;
+  s->font_header  = font_header;
   s->key_fn       = NULL;
   s->key_ctx      = NULL;
 
@@ -212,4 +269,8 @@ void app_set_key_handler(app_state_t *s, app_key_fn fn, void *ctx) {
 // ---------------------------------------------------------------------------
 float app_get_dpi_scale(const app_state_t *s) {
   return s ? s->dpi_scale : 1.0f;
+}
+
+const struct nk_user_font *app_get_header_font(const app_state_t *s) {
+  return (s && s->font_header) ? &s->font_header->handle : NULL;
 }
