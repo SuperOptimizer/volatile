@@ -391,6 +391,16 @@ int main(int argc, char **argv) {
     .vol_info_open         = false,
   };
 
+  // --- Floating panel geometry (fractions of window; loaded from settings) ---
+  // Nuklear tracks moves internally; we only set the initial rect.
+#define FPL(k, d) settings_get_float(prefs, k, d)
+  struct { float x, y, w, h; } fp_vctrl   = { FPL("fp.vctrl.x",  0.75f), FPL("fp.vctrl.y",  0.04f), FPL("fp.vctrl.w",  0.24f), FPL("fp.vctrl.h",  0.44f) };
+  struct { float x, y, w, h; } fp_volinfo = { FPL("fp.volinfo.x", 0.01f), FPL("fp.volinfo.y", 0.04f), FPL("fp.volinfo.w", 0.20f), FPL("fp.volinfo.h", 0.33f) };
+  struct { float x, y, w, h; } fp_draw    = { FPL("fp.draw.x",    0.01f), FPL("fp.draw.y",    0.44f), FPL("fp.draw.w",    0.20f), FPL("fp.draw.h",    0.44f) };
+  struct { float x, y, w, h; } fp_dt      = { FPL("fp.dt.x",      0.22f), FPL("fp.dt.y",      0.44f), FPL("fp.dt.w",      0.19f), FPL("fp.dt.h",      0.33f) };
+  struct { float x, y, w, h; } fp_points  = { FPL("fp.points.x",  0.42f), FPL("fp.points.y",  0.44f), FPL("fp.points.w",  0.19f), FPL("fp.points.h",  0.33f) };
+#undef FPL
+
   // --- Menu callback context ---
   menu_ctx mctx = {
     .settings_dlg    = settings_dlg,
@@ -538,23 +548,77 @@ int main(int argc, char **argv) {
     crosshair_sync_render_overlays(xhair, vxz, ov_xz);
     crosshair_sync_render_overlays(xhair, vyz, ov_yz);
 
-    // --- XY viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_XY, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
-      render_viewer_panel(ctx, vxy, "XY (axial)", sb_xy);
-    }
-    nk_end(ctx);
+    // --- Viewer area: welcome panel when no volume, viewers otherwise ---
+    if (!vol) {
+      // Compute the bounding rect that covers all 4 viewer panels combined.
+      // In the default vc3d layout the viewers occupy x=[0, 1-SIDE_W],
+      // y=[0, 1-CONSOLE_H] of the usable area.
+      float usable_h = (float)win_h - (float)menubar_h - (float)statusbar_h;
+      panel_rect rxy = layout_get_panel(layout, PANEL_VIEWER_XY);
+      panel_rect r3d = layout_get_panel(layout, PANEL_VIEWER_3D);
+      // Combined rect spans from XY top-left to 3D bottom-right
+      float vx = rxy.x * (float)win_w;
+      float vy = (float)menubar_h + rxy.y * usable_h;
+      float vw = (r3d.x + r3d.w) * (float)win_w - vx;
+      float vh = (r3d.y + r3d.h) * usable_h - rxy.y * usable_h;
+      if (nk_begin(ctx, "##welcome", nk_rect(vx, vy, vw, vh),
+                   NK_WINDOW_NO_SCROLLBAR)) {
+        welcome_result wr = welcome_panel_render(welcome, ctx,
+                                                  (int)vw, (int)vh);
+        switch (wr.action) {
+          case WELCOME_OPEN_ZARR:
+            file_dialog_show(fdlg_zarr, NULL);
+            break;
+          case WELCOME_OPEN_VOLPKG:
+            file_dialog_show(fdlg_volpkg, NULL);
+            break;
+          case WELCOME_OPEN_S3:
+            s3_browser_show(s3_brow);
+            break;
+          case WELCOME_OPEN_URL:
+          case WELCOME_OPEN_RECENT:
+            if (wr.url[0]) {
+              vol_free(vol);
+              vol = vol_open(wr.url);
+              if (vol) {
+                viewer_set_volume(vxy, vol);
+                viewer_set_volume(vxz, vol);
+                viewer_set_volume(vyz, vol);
+                viewer3d_set_volume(v3d, vol);
+                welcome_panel_add_recent(welcome, wr.url, wr.url);
+                menubar_add_recent(mbar, wr.url);
+                LOG_INFO("Opened: %s", wr.url);
+              } else {
+                LOG_WARN("Failed to open: %s", wr.url);
+              }
+            }
+            break;
+          case WELCOME_OPEN_PROJECT:
+            file_dialog_show(fdlg_volpkg, NULL);  // reuse for project files
+            break;
+          default: break;
+        }
+      }
+      nk_end(ctx);
+    } else {
+      // --- XY viewer ---
+      if (panel_begin(ctx, layout, PANEL_VIEWER_XY, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
+        render_viewer_panel(ctx, vxy, "XY (axial)", sb_xy);
+      }
+      nk_end(ctx);
 
-    // --- XZ viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
-      render_viewer_panel(ctx, vxz, "XZ (coronal)", sb_xz);
-    }
-    nk_end(ctx);
+      // --- XZ viewer ---
+      if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
+        render_viewer_panel(ctx, vxz, "XZ (coronal)", sb_xz);
+      }
+      nk_end(ctx);
 
-    // --- YZ viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
-      render_viewer_panel(ctx, vyz, "YZ (sagittal)", sb_yz);
+      // --- YZ viewer ---
+      if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
+        render_viewer_panel(ctx, vyz, "YZ (sagittal)", sb_yz);
+      }
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- 3D viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_3D, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {

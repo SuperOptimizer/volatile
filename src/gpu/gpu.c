@@ -359,25 +359,40 @@ gpu_pipeline *gpu_pipeline_create(gpu_device *dev, const uint8_t *spirv, size_t 
     return NULL;
   }
 
-  // Use the empty layout for the compute pipeline if shaders have no resources.
-  // We create the pipeline with the empty layout so 0-buffer dispatches don't
-  // require descriptor sets.
-  VkComputePipelineCreateInfo cpci = {
-    .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-    .stage  = {
-      .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-      .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-      .module = shader,
-      .pName  = "main",
+  // Create two pipelines: one with the full buffer layout, one with the empty
+  // layout (0 set layouts) for dispatches with no buffers. This ensures
+  // vkCmdBindDescriptorSets is never called with uninitialized descriptor sets
+  // on drivers (e.g. Adreno) that crash on such operations.
+  VkComputePipelineCreateInfo cpcis[2] = {
+    {
+      .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+      .stage  = {
+        .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = shader,
+        .pName  = "main",
+      },
+      .layout = layout,
     },
-    .layout = layout,
+    {
+      .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+      .stage  = {
+        .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = shader,
+        .pName  = "main",
+      },
+      .layout = layout_empty,
+    },
   };
-  VkPipeline pipeline = VK_NULL_HANDLE;
-  VkResult r = vkCreateComputePipelines(vkdev, VK_NULL_HANDLE, 1, &cpci, NULL, &pipeline);
+  VkPipeline pipelines[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+  VkResult r = vkCreateComputePipelines(vkdev, VK_NULL_HANDLE, 2, cpcis, NULL, pipelines);
   vkDestroyShaderModule(vkdev, shader, NULL);
 
   if (r != VK_SUCCESS) {
     LOG_WARN("gpu_pipeline_create: vkCreateComputePipelines failed (%d)", r);
+    vkDestroyPipeline(vkdev, pipelines[0], NULL);
+    vkDestroyPipeline(vkdev, pipelines[1], NULL);
     vkDestroyPipelineLayout(vkdev, layout_empty, NULL);
     vkDestroyPipelineLayout(vkdev, layout, NULL);
     vkDestroyDescriptorSetLayout(vkdev, ds_layout, NULL);
@@ -398,7 +413,9 @@ gpu_pipeline *gpu_pipeline_create(gpu_device *dev, const uint8_t *spirv, size_t 
   VkDescriptorPool ds_pool = VK_NULL_HANDLE;
   if (vkCreateDescriptorPool(vkdev, &dpci, NULL, &ds_pool) != VK_SUCCESS) {
     LOG_WARN("gpu_pipeline_create: vkCreateDescriptorPool failed");
-    vkDestroyPipeline(vkdev, pipeline, NULL);
+    vkDestroyPipeline(vkdev, pipelines[1], NULL);
+    vkDestroyPipeline(vkdev, pipelines[0], NULL);
+    vkDestroyPipelineLayout(vkdev, layout_empty, NULL);
     vkDestroyPipelineLayout(vkdev, layout, NULL);
     vkDestroyDescriptorSetLayout(vkdev, ds_layout, NULL);
     return NULL;
@@ -407,18 +424,20 @@ gpu_pipeline *gpu_pipeline_create(gpu_device *dev, const uint8_t *spirv, size_t 
   gpu_pipeline *p = calloc(1, sizeof(*p));
   if (!p) {
     vkDestroyDescriptorPool(vkdev, ds_pool, NULL);
-    vkDestroyPipeline(vkdev, pipeline, NULL);
+    vkDestroyPipeline(vkdev, pipelines[1], NULL);
+    vkDestroyPipeline(vkdev, pipelines[0], NULL);
     vkDestroyPipelineLayout(vkdev, layout_empty, NULL);
     vkDestroyPipelineLayout(vkdev, layout, NULL);
     vkDestroyDescriptorSetLayout(vkdev, ds_layout, NULL);
     return NULL;
   }
-  p->dev          = dev;
-  p->pipeline     = pipeline;
-  p->layout       = layout;
-  p->layout_empty = layout_empty;
-  p->ds_layout    = ds_layout;
-  p->ds_pool      = ds_pool;
+  p->dev            = dev;
+  p->pipeline       = pipelines[0];
+  p->pipeline_empty = pipelines[1];
+  p->layout         = layout;
+  p->layout_empty   = layout_empty;
+  p->ds_layout      = ds_layout;
+  p->ds_pool        = ds_pool;
   return p;
 }
 
@@ -426,6 +445,7 @@ void gpu_pipeline_destroy(gpu_pipeline *p) {
   if (!p) return;
   VkDevice vkdev = vk_device(p->dev->vk);
   vkDestroyDescriptorPool(vkdev, p->ds_pool, NULL);
+  vkDestroyPipeline(vkdev, p->pipeline_empty, NULL);
   vkDestroyPipeline(vkdev, p->pipeline, NULL);
   vkDestroyPipelineLayout(vkdev, p->layout_empty, NULL);
   vkDestroyPipelineLayout(vkdev, p->layout, NULL);
