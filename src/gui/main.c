@@ -631,7 +631,8 @@ int main(int argc, char **argv) {
     // --- Viewer controls ---
     if (flt.viewer_controls_open) {
       if (nk_begin(ctx, "Viewer Controls",
-                   nk_rect(1200, 50, 380, 400), float_flags)) {
+                   nk_rect(fp_vctrl.x * win_w,   fp_vctrl.y * win_h,
+                           fp_vctrl.w * win_w,   fp_vctrl.h * win_h), float_flags)) {
         flt.viewer_controls_open = viewer_controls_render(vctrl, ctx, vxy);
         // overlay volume controls in same panel
         nk_layout_row_dynamic(ctx, 4, 1);
@@ -646,7 +647,8 @@ int main(int argc, char **argv) {
     // --- Volume info ---
     if (flt.vol_info_open) {
       if (nk_begin(ctx, "Volume Info",
-                   nk_rect(20, 50, 320, 300), float_flags)) {
+                   nk_rect(fp_volinfo.x * win_w, fp_volinfo.y * win_h,
+                           fp_volinfo.w * win_w, fp_volinfo.h * win_h), float_flags)) {
         vol_info_panel_render(vol_info, ctx, vol, NULL);
       } else {
         flt.vol_info_open = false;
@@ -657,7 +659,8 @@ int main(int argc, char **argv) {
     // --- Drawing panel ---
     if (flt.draw_panel_open) {
       if (nk_begin(ctx, "Drawing",
-                   nk_rect(20, 360, 320, 400), float_flags)) {
+                   nk_rect(fp_draw.x * win_w, fp_draw.y * win_h,
+                           fp_draw.w * win_w, fp_draw.h * win_h), float_flags)) {
         draw_panel_render(drawp, ctx);
       } else {
         flt.draw_panel_open = false;
@@ -668,7 +671,8 @@ int main(int argc, char **argv) {
     // --- Distance transform panel ---
     if (flt.dt_panel_open) {
       if (nk_begin(ctx, "Distance Transform",
-                   nk_rect(350, 360, 300, 300), float_flags)) {
+                   nk_rect(fp_dt.x * win_w, fp_dt.y * win_h,
+                           fp_dt.w * win_w, fp_dt.h * win_h), float_flags)) {
         dt_panel_render(dtp, ctx, "Distance Transform");
       } else {
         flt.dt_panel_open = false;
@@ -679,7 +683,8 @@ int main(int argc, char **argv) {
     // --- Point collection panel ---
     if (flt.point_panel_open) {
       if (nk_begin(ctx, "Point Collections",
-                   nk_rect(660, 360, 300, 300), float_flags)) {
+                   nk_rect(fp_points.x * win_w, fp_points.y * win_h,
+                           fp_points.w * win_w, fp_points.h * win_h), float_flags)) {
         point_panel_render(pointp, ctx, "Points");
       } else {
         flt.point_panel_open = false;
@@ -764,6 +769,27 @@ int main(int argc, char **argv) {
   }
 
   // ---------------------------------------------------------------------------
+  // Persist UI state to settings
+  // ---------------------------------------------------------------------------
+  // Save floating panel geometry (fractions) so next launch restores positions.
+  // Nuklear tracks user moves internally; we read back via nk_window_get_bounds
+  // so positions reflect any moves made this session.
+#define FPS(k, v) settings_set_float(prefs, k, v)
+  struct nk_rect rb;
+  rb = nk_window_get_bounds(app_nk_ctx(app), "Viewer Controls");
+  if (rb.w > 0) { FPS("fp.vctrl.x", rb.x / win_w); FPS("fp.vctrl.y", rb.y / win_h); FPS("fp.vctrl.w", rb.w / win_w); FPS("fp.vctrl.h", rb.h / win_h); }
+  rb = nk_window_get_bounds(app_nk_ctx(app), "Volume Info");
+  if (rb.w > 0) { FPS("fp.volinfo.x", rb.x / win_w); FPS("fp.volinfo.y", rb.y / win_h); FPS("fp.volinfo.w", rb.w / win_w); FPS("fp.volinfo.h", rb.h / win_h); }
+  rb = nk_window_get_bounds(app_nk_ctx(app), "Drawing");
+  if (rb.w > 0) { FPS("fp.draw.x", rb.x / win_w); FPS("fp.draw.y", rb.y / win_h); FPS("fp.draw.w", rb.w / win_w); FPS("fp.draw.h", rb.h / win_h); }
+  rb = nk_window_get_bounds(app_nk_ctx(app), "Distance Transform");
+  if (rb.w > 0) { FPS("fp.dt.x", rb.x / win_w); FPS("fp.dt.y", rb.y / win_h); FPS("fp.dt.w", rb.w / win_w); FPS("fp.dt.h", rb.h / win_h); }
+  rb = nk_window_get_bounds(app_nk_ctx(app), "Point Collections");
+  if (rb.w > 0) { FPS("fp.points.x", rb.x / win_w); FPS("fp.points.y", rb.y / win_h); FPS("fp.points.w", rb.w / win_w); FPS("fp.points.h", rb.h / win_h); }
+#undef FPS
+  settings_save(prefs);
+
+  // ---------------------------------------------------------------------------
   // Cleanup
   // ---------------------------------------------------------------------------
   log_set_callback(NULL, NULL);
@@ -796,6 +822,7 @@ int main(int argc, char **argv) {
   vol_info_panel_free(vol_info);
   statusbar_free(sbar);
   toolbar_free(tools);
+  welcome_panel_free(welcome);
   menubar_free(mbar);
   settings_dialog_free(settings_dlg);
   about_dialog_free(about_dlg);

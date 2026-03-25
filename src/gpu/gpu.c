@@ -467,10 +467,11 @@ void gpu_dispatch(gpu_device *dev, gpu_pipeline *p,
 
   VkCommandPool pool = make_cmd_pool(vkdev, vk_compute_queue_family(dev->vk));
   VkCommandBuffer cb = begin_one_shot(vkdev, pool);
-  vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->pipeline);
 
   if (nb > 0) {
-    // Allocate and populate a descriptor set for the storage buffers.
+    // Use the full pipeline (layout with 16 bindings) and bind descriptor sets.
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->pipeline);
+
     VkDescriptorSetAllocateInfo dsai = {
       .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
       .descriptorPool     = p->ds_pool,
@@ -498,8 +499,10 @@ void gpu_dispatch(gpu_device *dev, gpu_pipeline *p,
     vkUpdateDescriptorSets(vkdev, (uint32_t)nb, writes, 0, NULL);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout,
                             0, 1, &ds, 0, NULL);
+  } else {
+    // Use the empty pipeline (layout with 0 set layouts) — no descriptor sets.
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->pipeline_empty);
   }
-  // When nb == 0: use layout_empty (0 set layouts) — no descriptor sets to bind.
 
   vkCmdDispatch(cb, (uint32_t)groups_x, (uint32_t)groups_y, (uint32_t)groups_z);
   end_one_shot(vkdev, pool, vk_compute_queue(dev->vk), cb);
