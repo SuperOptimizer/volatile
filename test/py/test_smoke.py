@@ -69,3 +69,11 @@ def test_import_ml_train():
 
 def test_import_ml_data():
   import volatile.ml.data
+
+
+def test_import_rendering():
+  import volatile.rendering
+
+
+def test_import_napari_plugin():
+  import volatile.napari_plugin

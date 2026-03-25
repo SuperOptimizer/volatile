@@ -11,7 +11,7 @@ set(_core_only_tests
   test_log test_hash test_json test_chunk test_thread
   test_math test_geom test_imgproc test_io test_net
   test_vol test_cache test_compress4d test_compress4d_zarr test_vol_mirror
-  test_real_data
+  test_real_data test_tracer
 )
 
 # core + render
@@ -51,6 +51,10 @@ set(_gui_tests
   test_layout test_drawing test_seeding test_vol_selector test_window_range
   test_toolbar test_slice_controller test_cred_dialog test_viewer_controls
   test_menubar test_settings_dialog test_seg_panels test_overlay_vol
+  test_about_dialog test_keybinds_dialog
+  test_draw_panel test_file_dialog
+  test_vol_info_panel
+  test_statusbar test_scalebar
 )
 
 # ---------------------------------------------------------------------------
@@ -101,8 +105,23 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c")
   set_tests_properties(test_sync PROPERTIES TIMEOUT 10)
 endif()
 
+# test_review_report: compile review_report.c directly — no SDL/Nuklear needed.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_review_report.c")
+  add_executable(test_review_report
+    test_review_report.c
+    ${CMAKE_SOURCE_DIR}/src/gui/review_report.c
+  )
+  target_include_directories(test_review_report PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${greatest_SOURCE_DIR}
+  )
+  target_link_libraries(test_review_report PRIVATE volatile_core volatile_server)
+  add_test(NAME test_review_report COMMAND test_review_report)
+  set_tests_properties(test_review_report PROPERTIES TIMEOUT 10)
+endif()
+
 # tests handled specially above (not processed by the generic loop)
-set(_special_tests test_sync test_tool_runner)
+set(_special_tests test_sync test_tool_runner test_review_report test_dt_panel test_point_panel)
 
 # tests not listed above (e.g. CLI tests) get core only
 foreach(_src IN LISTS _test_sources)
@@ -151,3 +170,33 @@ foreach(_src IN LISTS _test_sources)
     endif()
   endif()
 endforeach()
+
+# test_dt_panel: compile dt_panel.c directly — no GUI/SDL deps needed.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_dt_panel.c")
+  add_executable(test_dt_panel
+    test_dt_panel.c
+    ${CMAKE_SOURCE_DIR}/src/gui/dt_panel.c
+  )
+  target_include_directories(test_dt_panel PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${greatest_SOURCE_DIR}
+  )
+  target_link_libraries(test_dt_panel PRIVATE volatile_core)
+  add_test(NAME test_dt_panel COMMAND test_dt_panel)
+  set_tests_properties(test_dt_panel PROPERTIES TIMEOUT 10)
+endif()
+
+# test_point_panel: compile point_panel.c directly — no GUI/SDL deps needed.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_point_panel.c")
+  add_executable(test_point_panel
+    test_point_panel.c
+    ${CMAKE_SOURCE_DIR}/src/gui/point_panel.c
+  )
+  target_include_directories(test_point_panel PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${greatest_SOURCE_DIR}
+  )
+  target_link_libraries(test_point_panel PRIVATE volatile_core)
+  add_test(NAME test_point_panel COMMAND test_point_panel)
+  set_tests_properties(test_point_panel PROPERTIES TIMEOUT 10)
+endif()

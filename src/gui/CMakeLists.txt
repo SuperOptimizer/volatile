@@ -46,6 +46,8 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   review_report.c
   about_dialog.c
   keybinds_dialog.c
+  statusbar.c
+  scalebar.c
 )
 
 target_include_directories(volatile_gui PUBLIC
@@ -68,6 +70,10 @@ set_target_properties(volatile_gui PROPERTIES
   C_STANDARD_REQUIRED ON
   C_EXTENSIONS OFF
 )
+
+# Suppress warnings on app.c (includes Nuklear implementation + SDL3 renderer header)
+# These are third-party headers we don't control
+set_source_files_properties(app.c PROPERTIES COMPILE_OPTIONS "-Wno-conversion;-Wno-sign-conversion;-Wno-float-conversion;-Wno-double-promotion")
 
 # ---------------------------------------------------------------------------
 # volatile_gui_app — standalone GUI executable

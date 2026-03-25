@@ -64,6 +64,25 @@ set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(blosc2)
 
+# Suppress all warnings on blosc2 and its internal deps (zlib-ng, zstd, lz4)
+# These are third-party code we don't control
+function(suppress_warnings_recursive dir)
+  get_property(targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(t IN LISTS targets)
+    get_property(type TARGET "${t}" PROPERTY TYPE)
+    if(type MATCHES "STATIC_LIBRARY|SHARED_LIBRARY|OBJECT_LIBRARY")
+      target_compile_options("${t}" PRIVATE -w)
+    endif()
+  endforeach()
+  get_property(subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+  foreach(sd IN LISTS subdirs)
+    suppress_warnings_recursive("${sd}")
+  endforeach()
+endfunction()
+if(blosc2_SOURCE_DIR)
+  suppress_warnings_recursive("${blosc2_SOURCE_DIR}")
+endif()
+
 # Nuklear — immediate-mode GUI (header-only)
 FetchContent_Declare(
   nuklear

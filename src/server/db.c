@@ -201,6 +201,43 @@ bool seg_db_list_segments(seg_db *db, const char *volume_id,
   return ok;
 }
 
+bool seg_db_list_all_segments(seg_db *db, segment_cb cb, void *userdata) {
+  if (!db || !cb) return false;
+
+  const char *sql =
+    "SELECT id, volume_id, name, surface_path, created_at, updated_at"
+    " FROM segments ORDER BY id";
+
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2(db->sql, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+
+  bool ok = true;
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    segment_row row = {0};
+    row.id = sqlite3_column_int64(stmt, 0);
+
+    const char *vol = (const char *)sqlite3_column_text(stmt, 1);
+    const char *nm  = (const char *)sqlite3_column_text(stmt, 2);
+    const char *sp  = (const char *)sqlite3_column_text(stmt, 3);
+
+    strncpy(row.volume_id,    vol ? vol : "", sizeof(row.volume_id)    - 1);
+    strncpy(row.name,         nm  ? nm  : "", sizeof(row.name)         - 1);
+    strncpy(row.surface_path, sp  ? sp  : "", sizeof(row.surface_path) - 1);
+
+    row.volume_id[sizeof(row.volume_id)       - 1] = '\0';
+    row.name[sizeof(row.name)                 - 1] = '\0';
+    row.surface_path[sizeof(row.surface_path) - 1] = '\0';
+
+    row.created_at = sqlite3_column_int64(stmt, 4);
+    row.updated_at = sqlite3_column_int64(stmt, 5);
+
+    if (!cb(&row, userdata)) break;
+  }
+
+  sqlite3_finalize(stmt);
+  return ok;
+}
+
 bool seg_db_delete_segment(seg_db *db, int64_t id) {
   if (!db) return false;
 

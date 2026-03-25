@@ -74,7 +74,7 @@ static bool write_segment_row(const segment_row *row, void *userdata) {
 
   if (ctx->html) {
     // Thumbnail path: <thumb_dir>/<id>.png  (optional)
-    char thumb_cell[512] = "<td>—</td>";
+    char thumb_cell[768] = "<td>—</td>";
     if (ctx->thumb_dir) {
       char thumb_path[512];
       snprintf(thumb_path, sizeof(thumb_path), "%s/%lld.png",
@@ -193,8 +193,7 @@ bool review_report_generate(const project *proj, const char *output_path, bool h
                           "----------------------------");
   }
 
-  // NULL volume_id lists all segments across all volumes
-  seg_db_list_segments(proj->db, NULL, write_segment_row, &ctx);
+  seg_db_list_all_segments(proj->db, write_segment_row, &ctx);
 
   if (html) {
     fprintf(f, "  </tbody>\n</table>\n<p>%d segment(s) total.</p>\n</body>\n</html>\n",

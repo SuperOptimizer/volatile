@@ -41,6 +41,9 @@ typedef bool (*segment_cb)(const segment_row *row, void *userdata);
 bool seg_db_list_segments(seg_db *db, const char *volume_id,
                            segment_cb cb, void *userdata);
 
+// Iterates ALL segments in the database regardless of volume_id.
+bool seg_db_list_all_segments(seg_db *db, segment_cb cb, void *userdata);
+
 bool seg_db_delete_segment(seg_db *db, int64_t id);
 
 // ---------------------------------------------------------------------------

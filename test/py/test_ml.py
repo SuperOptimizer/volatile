@@ -1156,3 +1156,149 @@ def test_aux_task_trainer_predict_aux_shape():
   preds = trainer.predict_aux(np.random.rand(1, 1, 16, 16).astype(np.float32))
   assert "stnorm" in preds
   assert preds["stnorm"].shape == (1, 3, 16, 16)
+
+
+# ---------------------------------------------------------------------------
+# ink_detection.py
+# ---------------------------------------------------------------------------
+
+from volatile.ml.ink_detection import (
+  InkDetector, InkDataset, InkUNet,
+  extract_surface_columns, _tile_positions, _gaussian_kernel_2d,
+)
+
+
+def _make_synthetic_ink_data(D=32, H=64, W=64, n_vols=2):
+  """Return (volumes, labels, surfaces) for ink detection tests."""
+  rng = np.random.default_rng(7)
+  volumes = [rng.random((D, H, W)).astype(np.float32) * 200 for _ in range(n_vols)]
+  labels = [(rng.random((H, W)) > 0.7).astype(np.float32) for _ in range(n_vols)]
+  surfaces = [np.full((H, W), D // 2, dtype=np.int32) for _ in range(n_vols)]
+  return volumes, labels, surfaces
+
+
+def test_gaussian_kernel_shape_and_max():
+  k = _gaussian_kernel_2d(16, sigma=2.0)
+  assert k.shape == (16, 16)
+  assert k.max() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_tile_positions_cover_all():
+  """All positions from _tile_positions should have full tile_size."""
+  H, W, ts, stride = 64, 64, 32, 16
+  positions = _tile_positions(H, W, ts, stride)
+  assert len(positions) > 0
+  for y1, x1, y2, x2 in positions:
+    assert y2 - y1 == ts
+    assert x2 - x1 == ts
+
+
+def test_tile_positions_single_tile():
+  """When H=W=tile_size there should be exactly one tile."""
+  positions = _tile_positions(64, 64, 64, 32)
+  assert (0, 0, 64, 64) in positions
+
+
+def test_extract_surface_columns_shape():
+  vol = np.random.rand(32, 16, 16).astype(np.float32)
+  surf = np.full((16, 16), 15, dtype=np.int32)
+  out = extract_surface_columns(vol, surf, z_range=8)
+  assert out.shape == (8, 16, 16)
+
+
+def test_extract_surface_columns_clips_z():
+  """Surface at z=0 with z_range=6 should not index below 0."""
+  vol = np.arange(32 * 4 * 4, dtype=np.float32).reshape(32, 4, 4)
+  surf = np.zeros((4, 4), dtype=np.int32)  # surface at z=0
+  out = extract_surface_columns(vol, surf, z_range=6)
+  assert out.shape == (6, 4, 4)
+  assert np.all(np.isfinite(out))
+
+
+def test_ink_unet_output_shape():
+  model = InkUNet(z_range=8, base_channels=8, num_levels=2)
+  x = Tensor.randn(2, 8, 32, 32)
+  out = model(x)
+  assert out.shape == (2, 1, 32, 32)
+
+
+def test_ink_dataset_len_and_item_shapes():
+  vols, lbls, surfs = _make_synthetic_ink_data(D=32, H=64, W=64, n_vols=2)
+  ds = InkDataset(vols, lbls, surfs, z_range=8, patch_size=32, stride=32, augment=False)
+  assert len(ds) > 0
+  img, lbl = ds[0]
+  assert img.shape == (8, 32, 32), f"got {img.shape}"
+  assert lbl.shape == (32, 32), f"got {lbl.shape}"
+
+
+def test_ink_dataset_augment_no_shape_change():
+  vols, lbls, surfs = _make_synthetic_ink_data(D=32, H=64, W=64, n_vols=1)
+  ds = InkDataset(vols, lbls, surfs, z_range=8, patch_size=32, stride=32, augment=True, seed=42)
+  img, lbl = ds[0]
+  assert img.shape == (8, 32, 32)
+  assert lbl.shape == (32, 32)
+
+
+def test_ink_dataset_batches():
+  vols, lbls, surfs = _make_synthetic_ink_data(D=32, H=64, W=64, n_vols=2)
+  ds = InkDataset(vols, lbls, surfs, z_range=8, patch_size=32, stride=32, augment=False)
+  batches = list(ds.batches(batch_size=2, shuffle=False))
+  assert len(batches) > 0
+  b = batches[0]
+  assert "image" in b and "label" in b
+  assert b["image"].ndim == 4  # (B, z_range, H, W)
+  assert b["label"].ndim == 3  # (B, H, W)
+
+
+def test_ink_dataset_skips_none_labels():
+  vols, lbls, surfs = _make_synthetic_ink_data(D=32, H=32, W=32, n_vols=2)
+  lbls[0] = None  # first volume has no label
+  ds_partial = InkDataset(vols, lbls, surfs, z_range=4, patch_size=16, stride=16, augment=False)
+  ds_full = InkDataset([vols[1]], [lbls[1]], [surfs[1]], z_range=4, patch_size=16, stride=16, augment=False)
+  assert len(ds_partial) == len(ds_full)
+
+
+def test_ink_detector_train_one_epoch():
+  """InkDetector.train should complete 1 epoch and return finite loss."""
+  vols, lbls, surfs = _make_synthetic_ink_data(D=32, H=64, W=64, n_vols=2)
+  ds = InkDataset(vols, lbls, surfs, z_range=8, patch_size=32, stride=32, augment=False, seed=0)
+
+  detector = InkDetector(z_range=8, base_channels=8, num_levels=2)
+  history = detector.train(ds, epochs=1, lr=1e-3, batch_size=2, verbose=False)
+
+  assert "train_loss" in history
+  assert len(history["train_loss"]) == 1
+  assert np.isfinite(history["train_loss"][0])
+
+
+def test_ink_detector_predict_surface_shape():
+  """predict_surface should return (H, W) probability map."""
+  D, H, W = 32, 64, 64
+  vol = np.random.rand(D, H, W).astype(np.float32) * 200
+  surf = np.full((H, W), D // 2, dtype=np.int32)
+
+  detector = InkDetector(z_range=8, base_channels=8, num_levels=2)
+  prob = detector.predict_surface(vol, surf, z_range=8, tile_size=32, stride=32)
+
+  assert prob.shape == (H, W), f"got {prob.shape}"
+  assert prob.dtype == np.float32
+  assert np.all(prob >= 0.0) and np.all(prob <= 1.0)
+
+
+def test_ink_detector_predict_volume_slice_shape():
+  """predict_volume_slice should return (H, W) map."""
+  D, H, W = 32, 64, 64
+  vol = np.random.rand(D, H, W).astype(np.float32) * 200
+
+  detector = InkDetector(z_range=8, base_channels=8, num_levels=2)
+  prob = detector.predict_volume_slice(vol, z=D // 2, tile_size=32, stride=32)
+
+  assert prob.shape == (H, W)
+  assert np.all(prob >= 0.0) and np.all(prob <= 1.0)
+
+
+def test_ink_detector_model_type_aliases():
+  """All model_type aliases should construct without error."""
+  for mt in ('unet', 'resnet3d', 'timesformer'):
+    det = InkDetector(model_type=mt, z_range=4, base_channels=4, num_levels=2)
+    assert det.model_type == mt

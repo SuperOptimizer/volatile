@@ -19,6 +19,7 @@ add_library(volatile_core STATIC
   profile.c
   sparse.c
   project.c
+  tracer.c
 )
 
 target_include_directories(volatile_core PUBLIC

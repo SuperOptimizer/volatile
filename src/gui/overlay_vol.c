@@ -203,7 +203,7 @@ bool overlay_volume_render_controls(overlay_volume *v, struct nk_context *ctx) {
   if (!v || !ctx) return false;
 #ifndef NK_INCLUDE_DEFAULT_ALLOCATOR
   (void)v; (void)ctx;
-  log_warn("overlay_volume_render_controls: Nuklear not available");
+  LOG_WARN("overlay_volume_render_controls: Nuklear not available");
   return false;
 #else
   bool changed = false;

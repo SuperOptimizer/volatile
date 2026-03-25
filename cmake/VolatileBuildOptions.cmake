@@ -6,6 +6,95 @@
 
 include_guard(GLOBAL)
 
+# =============================================================================
+# Default Toolchain: LLVM
+#
+# When VOLATILE_USE_LLVM_TOOLCHAIN is ON (the default) and the project is
+# configured with clang/clang++ as the C/C++ compiler, this block:
+#   - Confirms the compiler is clang and reports it
+#   - Enables lld as the default linker (much faster than GNU ld / gold)
+#   - Optionally switches the C++ standard library to libc++ via
+#     VOLATILE_USE_LIBCXX (off by default to stay compatible with system libs)
+#
+# To override and use GCC instead, either:
+#   cmake -DVOLATILE_USE_LLVM_TOOLCHAIN=OFF -DCMAKE_C_COMPILER=gcc ...
+#   or use the "gcc" CMake preset:  cmake --preset gcc
+# =============================================================================
+
+option(VOLATILE_USE_LLVM_TOOLCHAIN
+  "Use full LLVM toolchain (clang, lld, libc++)" ON)
+
+if(VOLATILE_USE_LLVM_TOOLCHAIN)
+  # Detect clang availability even if the user has not set CMAKE_C_COMPILER yet
+  # (only useful as an informational hint at configure time).
+  find_program(CLANG_COMPILER  clang)
+  find_program(CLANGXX_COMPILER clang++)
+
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(STATUS "LLVM toolchain: using clang (${CMAKE_C_COMPILER})")
+
+    # --- lld linker -----------------------------------------------------------
+    # lld is significantly faster than GNU ld, especially for large or LTO
+    # builds.  We use -fuse-ld=lld rather than the VOLATILE_USE_LLD option so
+    # the toolchain block is self-contained; VOLATILE_USE_LLD still works for
+    # explicit opt-in.
+    find_program(LLD_PROGRAM lld ld.lld)
+    if(LLD_PROGRAM)
+      add_link_options(-fuse-ld=lld)
+      message(STATUS "LLVM toolchain: using lld linker (${LLD_PROGRAM})")
+    else()
+      message(STATUS "LLVM toolchain: lld not found, falling back to default linker")
+    endif()
+
+    # --- libc++ (optional) ----------------------------------------------------
+    # Off by default: libc++ can conflict with system libraries built against
+    # libstdc++.  Enable only in fully-controlled environments (e.g. containers).
+    option(VOLATILE_USE_LIBCXX
+      "Use libc++ instead of libstdc++ (Clang only)" OFF)
+    if(VOLATILE_USE_LIBCXX)
+      add_compile_options(-stdlib=libc++)
+      add_link_options(-stdlib=libc++)
+      message(STATUS "LLVM toolchain: using libc++")
+    endif()
+
+  elseif(CLANG_COMPILER)
+    # Clang is installed but the project was not configured with it.
+    message(STATUS
+      "LLVM toolchain requested but compiler is ${CMAKE_C_COMPILER_ID}. "
+      "Re-configure with -DCMAKE_C_COMPILER=clang to use clang.")
+  else()
+    message(STATUS
+      "LLVM toolchain requested but clang not found in PATH.")
+  endif()
+endif()
+
+# =============================================================================
+# GCC Profile
+#
+# Optional block for GCC-specific flags.  Activated when
+# VOLATILE_USE_GCC_TOOLCHAIN=ON, which is set automatically by the "gcc"
+# CMake preset, or manually via -DVOLATILE_USE_GCC_TOOLCHAIN=ON.
+# =============================================================================
+
+option(VOLATILE_USE_GCC_TOOLCHAIN
+  "Apply GCC-specific build flags" OFF)
+if(VOLATILE_USE_GCC_TOOLCHAIN)
+  if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    # Colorize diagnostics in terminals that support ANSI escape codes.
+    add_compile_options(-fdiagnostics-color=always)
+    message(STATUS "GCC toolchain: diagnostics color enabled")
+  else()
+    message(STATUS
+      "VOLATILE_USE_GCC_TOOLCHAIN=ON but compiler is ${CMAKE_C_COMPILER_ID} "
+      "(not GNU); GCC-specific flags skipped)")
+  endif()
+endif()
+
+# =============================================================================
+# Compiler Family Detection
+# (Must come after the toolchain blocks above so CMAKE_C_COMPILER_ID is set.)
+# =============================================================================
+
 # Detect compiler family once so all blocks below can branch on it.
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(VOLATILE_COMPILER_CLANG TRUE)

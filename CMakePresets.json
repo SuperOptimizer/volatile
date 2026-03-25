@@ -1,0 +1,84 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "description": "Development build: Clang + Debug + ASan/UBSan + lld",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE":        "Debug",
+        "CMAKE_C_COMPILER":        "clang",
+        "CMAKE_CXX_COMPILER":      "clang++",
+        "VOLATILE_ENABLE_ASAN":    "ON",
+        "VOLATILE_ENABLE_UBSAN":   "ON",
+        "VOLATILE_USE_LLD":        "ON"
+      }
+    },
+    {
+      "name": "release",
+      "description": "Release build: Clang + ThinLTO + native march + lld",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE":        "Release",
+        "CMAKE_C_COMPILER":        "clang",
+        "CMAKE_CXX_COMPILER":      "clang++",
+        "VOLATILE_OPT_THINLTO":    "ON",
+        "VOLATILE_OPT_NATIVE":     "ON",
+        "VOLATILE_USE_LLD":        "ON"
+      }
+    },
+    {
+      "name": "gcc",
+      "description": "GCC build: RelWithDebInfo, no LTO",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE":              "RelWithDebInfo",
+        "CMAKE_C_COMPILER":              "gcc",
+        "CMAKE_CXX_COMPILER":            "g++",
+        "VOLATILE_USE_LLVM_TOOLCHAIN":   "OFF",
+        "VOLATILE_USE_GCC_TOOLCHAIN":    "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "jobs": 4
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 4
+    },
+    {
+      "name": "gcc",
+      "configurePreset": "gcc",
+      "jobs": 4
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": { "outputOnFailure": true },
+      "execution": { "timeout": 30 }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": { "outputOnFailure": true },
+      "execution": { "timeout": 30 }
+    },
+    {
+      "name": "gcc",
+      "configurePreset": "gcc",
+      "output": { "outputOnFailure": true },
+      "execution": { "timeout": 30 }
+    }
+  ]
+}
