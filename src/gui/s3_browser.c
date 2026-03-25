@@ -673,7 +673,7 @@ bool s3_browser_render(s3_browser *b, struct nk_context *ctx) {
   nk_layout_row_push(ctx, 0.12f);
   nk_label(ctx, "Bucket:", NK_TEXT_LEFT);
   nk_layout_row_push(ctx, 0.30f);
-  nk_edit_string(ctx, NK_EDIT_SIMPLE, b->bucket_input, &b->bucket_input_len,
+  nk_edit_string(ctx, NK_EDIT_FIELD, b->bucket_input, &b->bucket_input_len,
                  MAX_BUCKET - 1, nk_filter_default);
   nk_layout_row_push(ctx, 0.10f);
   if (nk_button_label(ctx, "Go")) {
@@ -681,7 +681,7 @@ bool s3_browser_render(s3_browser *b, struct nk_context *ctx) {
     s3_browser_set_bucket(b, b->bucket_input);
   }
   nk_layout_row_push(ctx, 0.28f);
-  nk_edit_string(ctx, NK_EDIT_SIMPLE | NK_EDIT_GOTO_END_ON_ACTIVATE,
+  nk_edit_string(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE,
                  b->filter, &b->filter_len, (int)sizeof(b->filter) - 1,
                  nk_filter_default);
   nk_layout_row_push(ctx, 0.20f);
@@ -691,7 +691,7 @@ bool s3_browser_render(s3_browser *b, struct nk_context *ctx) {
   // Search bar
   nk_layout_row_begin(ctx, NK_DYNAMIC, (float)ITEM_H, 3);
   nk_layout_row_push(ctx, 0.52f);
-  nk_edit_string(ctx, NK_EDIT_SIMPLE, b->search_pat, &b->search_pat_len,
+  nk_edit_string(ctx, NK_EDIT_FIELD, b->search_pat, &b->search_pat_len,
                  SEARCH_PAT_MAX - 1, nk_filter_default);
   nk_layout_row_push(ctx, 0.24f);
   if (nk_button_label(ctx, "Search")) {
