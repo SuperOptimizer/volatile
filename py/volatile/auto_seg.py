@@ -305,15 +305,24 @@ class AutoSegmenter:
     # 3. Compute mean normal direction: subsample and interpolate back
     normal_field = self._compute_normal_field(grad_vec)  # (D,H,W,3)
 
-    # 4. First derivative (projection of gradient onto normals)
-    d1 = self._project_onto_normals(grad_vec, normal_field)  # (D,H,W)
-    d1 = _scale_to_m1_1(d1)
+    # 4. First derivative: projection of gradient onto normals, with fallback to raw
+    #    Z-gradient when the normal field is degenerate (e.g. symmetric sheets cancel).
+    d1_proj = self._project_onto_normals(grad_vec, normal_field)  # (D,H,W)
+    # If the projection field is mostly flat (normal field cancelled out), use Gz directly
+    d1_raw = Gz  # signed gradient along z — works well for horizontal sheets
+    if np.abs(d1_proj).max() < 1e-4:
+      d1 = _scale_to_m1_1(d1_raw)
+    else:
+      # Blend: take the one with larger dynamic range
+      proj_range = float(np.abs(d1_proj).max())
+      raw_range = float(np.abs(d1_raw).max())
+      d1 = _scale_to_m1_1(d1_proj if proj_range >= raw_range * 0.5 else d1_raw)
 
-    # 5. Second derivative: re-apply Sobel to d1, project onto same normals
+    # 5. Second derivative: re-apply Sobel to d1, take Z component (or project)
     d1_Gx, d1_Gy, d1_Gz = _sobel_gradients(d1)
     d1_grad = np.stack([d1_Gz, d1_Gy, d1_Gx], axis=-1)
-    d2 = self._project_onto_normals(d1_grad, normal_field)   # (D,H,W)
-    d2 = _scale_to_m1_1(d2)
+    d2_proj = self._project_onto_normals(d1_grad, normal_field)
+    d2 = _scale_to_m1_1(d1_Gz if np.abs(d2_proj).max() < 1e-4 else d2_proj)
 
     # 6. Bell-curve threshold: inflection (|d2| small) with strong gradient (|d1| large)
     mask_recto = (np.abs(d2) < self.threshold_der2) & (d1 > self.threshold_der)

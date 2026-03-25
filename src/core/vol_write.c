@@ -221,8 +221,9 @@ volume *vol_create(const char *path, vol_create_params p) {
   m->ndim         = p.ndim;
   memcpy(m->shape,       p.shape,       sizeof(int64_t) * (size_t)p.ndim);
   memcpy(m->chunk_shape, p.chunk_shape, sizeof(int64_t) * (size_t)p.ndim);
-  m->dtype = (int)p.dtype;
-  m->order = 'C';
+  m->dtype      = (int)p.dtype;
+  m->order      = 'C';
+  m->chunk_sep  = (p.zarr_version == 2) ? '.' : '/';  // zarr v2 default: '.', v3: '/'
 
   if (p.compressor && p.compressor[0] != '\0') {
     strncpy(m->compressor_id, p.compressor, sizeof(m->compressor_id) - 1);
@@ -431,7 +432,7 @@ bool vol_build_pyramid(volume *v, int max_levels) {
           int64_t cc[3] = {cz, cy, cx};
           size_t chunk_sz = 0;
           uint8_t *chunk = vol_read_chunk(v, lvl - 1, cc, &chunk_sz);
-          if (!chunk) { fprintf(stderr, "DBG: vol_read_chunk NULL for lvl=%d cc=(%lld,%lld,%lld)\n", lvl-1, (long long)cz, (long long)cy, (long long)cx); continue; }
+          if (!chunk) continue;
 
           // scatter into src_vol
           int64_t oz = cz * prev->chunk_shape[0];

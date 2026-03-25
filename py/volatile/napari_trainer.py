@@ -96,7 +96,7 @@ class NapariTrainer:
         raise ImportError("tinygrad is required; install it with: pip install tinygrad")
       from .ml.model import UNet
       log.info("Creating default UNet (in_ch=1, out_ch=2)")
-      self._model = UNet(in_ch=1, out_ch=2)
+      self._model = UNet(in_channels=1, out_channels=2)
     return self._model
 
   def _load_model(self, path: str):
@@ -104,7 +104,7 @@ class NapariTrainer:
       raise ImportError("tinygrad is required to load a model")
     from .ml.model import UNet
     from tinygrad.nn.state import safe_load, load_state_dict
-    model = UNet(in_ch=1, out_ch=2)
+    model = UNet(in_channels=1, out_channels=2)
     state = safe_load(path)
     load_state_dict(model, state)
     log.info("Loaded model from %s", path)
@@ -159,9 +159,8 @@ class NapariTrainer:
       raise ImportError("tinygrad is required for training")
 
     vol = self._ensure_volume()
-    model = self._ensure_model()
 
-    # Resolve labels
+    # Resolve labels (before building model so we fail fast on missing labels)
     if labels_path:
       labels = np.load(labels_path).astype(np.int64)
     elif self._viewer is not None and hasattr(self, "_labels_layer"):
@@ -171,6 +170,7 @@ class NapariTrainer:
     else:
       raise ValueError("No labels available; pass labels_path or draw labels in the viewer first")
 
+    model = self._ensure_model()
     log.info("Training for %d epochs on volume %s", epochs, self.volume_path)
     from .ml.loss import DiceCELoss
     from .ml.data import PatchDataset

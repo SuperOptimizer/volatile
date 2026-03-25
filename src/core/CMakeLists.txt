@@ -29,6 +29,8 @@ add_library(volatile_core STATIC
   pointcloud.c
   diffusion.c
   binary_pyramid.c
+  abf.c
+  surface_index.c
 )
 
 target_include_directories(volatile_core PUBLIC
