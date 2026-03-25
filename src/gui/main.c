@@ -131,6 +131,41 @@ static void cb_show_console(void *ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Keyboard dispatch
+// ---------------------------------------------------------------------------
+
+typedef struct {
+  keybind_map  *binds;
+  slice_viewer *vxy, *vxz, *vyz;
+} key_dispatch_ctx;
+
+static void on_key_event(int scancode, int modifiers, bool pressed, void *raw_ctx) {
+  if (!pressed) return;  // only handle key-down
+  key_dispatch_ctx *kc = raw_ctx;
+  int action = keybind_lookup(kc->binds, scancode, modifiers);
+  if (action < 0) return;
+
+  switch ((action_id)action) {
+    case ACTION_PAN_LEFT:   viewer_pan(kc->vxy, -5.0f,  0.0f); break;
+    case ACTION_PAN_RIGHT:  viewer_pan(kc->vxy,  5.0f,  0.0f); break;
+    case ACTION_PAN_UP:     viewer_pan(kc->vxy,  0.0f, -5.0f); break;
+    case ACTION_PAN_DOWN:   viewer_pan(kc->vxy,  0.0f,  5.0f); break;
+    case ACTION_ZOOM_IN:    viewer_zoom(kc->vxy,  1.1f, 0.0f, 0.0f); break;
+    case ACTION_ZOOM_OUT:   viewer_zoom(kc->vxy,  0.9f, 0.0f, 0.0f); break;
+    case ACTION_SLICE_NEXT: viewer_scroll_slice(kc->vxy,  1.0f); break;
+    case ACTION_SLICE_PREV: viewer_scroll_slice(kc->vxy, -1.0f); break;
+    case ACTION_GROW_LEFT:  LOG_INFO("keybind: grow left");  break;
+    case ACTION_GROW_RIGHT: LOG_INFO("keybind: grow right"); break;
+    case ACTION_GROW_UP:    LOG_INFO("keybind: grow up");    break;
+    case ACTION_GROW_DOWN:  LOG_INFO("keybind: grow down");  break;
+    case ACTION_GROW_ALL_DIR: LOG_INFO("keybind: grow all"); break;
+    case ACTION_GROW_ONE:   LOG_INFO("keybind: grow one");   break;
+    case ACTION_GROW_ALL:   LOG_INFO("keybind: grow all (Ctrl+G)"); break;
+    default: break;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Render helpers
 // ---------------------------------------------------------------------------
 
@@ -194,8 +229,8 @@ int main(int argc, char **argv) {
   app_state_t *app = app_init(&cfg);
   if (!app) { log_set_callback(NULL, NULL); log_console_free(g_console); return 1; }
 
-  const int WIN_W = 1600, WIN_H = 900;
-  const int MENUBAR_H  = 30;
+  int win_w = 1600, win_h = 900;
+  const int MENUBAR_H   = 30;
   const int STATUSBAR_H = 24;
 
   // --- Layout ---
@@ -287,6 +322,8 @@ int main(int argc, char **argv) {
 
   // --- Keybinds ---
   keybind_map *binds = keybind_new();
+  key_dispatch_ctx kdc = { .binds = binds, .vxy = vxy, .vxz = vxz, .vyz = vyz };
+  app_set_key_handler(app, on_key_event, &kdc);
 
   // --- Dialogs ---
   settings_dialog  *settings_dlg = settings_dialog_new(prefs);
@@ -385,11 +422,12 @@ int main(int argc, char **argv) {
 
     // 1. Event pump + Nuklear input
     app_begin_frame(app);
+    app_get_size(app, &win_w, &win_h);
     struct nk_context *ctx = app_nk_ctx(app);
 
     // 2. Menu bar (full-width, 30 px, y=0)
     if (nk_begin(ctx, "##menubar",
-                 nk_rect(0, 0, (float)WIN_W, (float)MENUBAR_H),
+                 nk_rect(0, 0, (float)win_w, (float)MENUBAR_H),
                  NK_WINDOW_NO_SCROLLBAR)) {
       menubar_render(mbar, ctx);
     }
@@ -397,7 +435,7 @@ int main(int argc, char **argv) {
 
     // 3. Named layout panels
     // --- Volume browser (hidden by default; toggled via View menu) ---
-    if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, win_w, win_h, panel_flags)) {
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Volume", NK_TEXT_LEFT);
       if (vol_selector_render(volsel, ctx)) {
@@ -425,7 +463,7 @@ int main(int argc, char **argv) {
     nk_end(ctx);
 
     // --- Segmentation panel ---
-    if (panel_begin(ctx, layout, PANEL_SEGMENTATION, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_SEGMENTATION, win_w, win_h, panel_flags)) {
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Volume", NK_TEXT_LEFT);
       if (vol_selector_render(volsel, ctx)) {
@@ -461,13 +499,13 @@ int main(int argc, char **argv) {
     nk_end(ctx);
 
     // --- Surface tree ---
-    if (panel_begin(ctx, layout, PANEL_SURFACE_TREE, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_SURFACE_TREE, win_w, win_h, panel_flags)) {
       surface_panel_render(surf_panel, ctx, NULL);
     }
     nk_end(ctx);
 
     // --- Console ---
-    if (panel_begin(ctx, layout, PANEL_CONSOLE, WIN_W, WIN_H,
+    if (panel_begin(ctx, layout, PANEL_CONSOLE, win_w, win_h,
                     NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
       log_console_render(g_console, ctx, NULL);
     }
@@ -482,25 +520,25 @@ int main(int argc, char **argv) {
     crosshair_sync_render_overlays(xhair, vyz, ov_yz);
 
     // --- XY viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_XY, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_XY, win_w, win_h, panel_flags)) {
       render_viewer_panel(ctx, vxy, "XY (axial)", sb_xy);
     }
     nk_end(ctx);
 
     // --- XZ viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, win_w, win_h, panel_flags)) {
       render_viewer_panel(ctx, vxz, "XZ (coronal)", sb_xz);
     }
     nk_end(ctx);
 
     // --- YZ viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, win_w, win_h, panel_flags)) {
       render_viewer_panel(ctx, vyz, "YZ (sagittal)", sb_yz);
     }
     nk_end(ctx);
 
     // --- 3D viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_3D, WIN_W, WIN_H, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_3D, win_w, win_h, panel_flags)) {
       render_3d_panel(ctx, v3d);
     }
     nk_end(ctx);
@@ -598,8 +636,8 @@ int main(int argc, char **argv) {
     statusbar_update(sbar, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0,
                      dt_ms > 0.0f ? 1000.0f / dt_ms : 0.0f, 0);
     if (nk_begin(ctx, "##statusbar",
-                 nk_rect(0, (float)(WIN_H - STATUSBAR_H),
-                         (float)WIN_W, (float)STATUSBAR_H),
+                 nk_rect(0, (float)(win_h - STATUSBAR_H),
+                         (float)win_w, (float)STATUSBAR_H),
                  NK_WINDOW_NO_SCROLLBAR)) {
       statusbar_render(sbar, ctx, STATUSBAR_H);
     }

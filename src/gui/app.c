@@ -36,6 +36,8 @@ struct app_state {
   int            win_w, win_h;     // logical window size (points)
   int            pixel_w, pixel_h; // pixel size (for high-DPI)
   float          dpi_scale;        // pixel_w / win_w
+  app_key_fn     key_fn;
+  void          *key_ctx;
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,8 @@ app_state_t *app_init(const app_config_t *cfg) {
   s->pixel_w      = pw;
   s->pixel_h      = ph;
   s->dpi_scale    = dpi;
+  s->key_fn       = NULL;
+  s->key_ctx      = NULL;
 
   LOG_INFO("GUI init: %s %dx%d", title, width, height);
   return s;
@@ -140,6 +144,10 @@ bool app_begin_frame(app_state_t *s) {
     }
     if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
       s->should_close = true;
+    }
+    if (s->key_fn && (ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP)) {
+      s->key_fn((int)ev.key.scancode, (int)ev.key.mod,
+                ev.type == SDL_EVENT_KEY_DOWN, s->key_ctx);
     }
     if (ev.type == SDL_EVENT_WINDOW_RESIZED) {
       s->win_w = ev.window.data1;
@@ -188,4 +196,13 @@ struct nk_context *app_nk_ctx(app_state_t *s) {
 void app_get_size(const app_state_t *s, int *w, int *h) {
   if (w) *w = s ? s->win_w : 0;
   if (h) *h = s ? s->win_h : 0;
+}
+
+// ---------------------------------------------------------------------------
+// app_set_key_handler
+// ---------------------------------------------------------------------------
+void app_set_key_handler(app_state_t *s, app_key_fn fn, void *ctx) {
+  if (!s) return;
+  s->key_fn  = fn;
+  s->key_ctx = ctx;
 }

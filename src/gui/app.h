@@ -57,3 +57,16 @@ struct nk_context *app_nk_ctx(app_state_t *s);
 
 // Return current logical window size (updated each frame on resize).
 void app_get_size(const app_state_t *s, int *w, int *h);
+
+// ---------------------------------------------------------------------------
+// Keyboard event callback
+// ---------------------------------------------------------------------------
+
+// Callback invoked for each SDL_EVENT_KEY_DOWN / SDL_EVENT_KEY_UP.
+// scancode: SDL_Scancode value (integer).
+// modifiers: SDL_Keymod bitmask.
+// pressed: true = key down, false = key up.
+typedef void (*app_key_fn)(int scancode, int modifiers, bool pressed, void *ctx);
+
+// Register a callback for raw SDL key events.  Pass NULL to remove.
+void app_set_key_handler(app_state_t *s, app_key_fn fn, void *ctx);

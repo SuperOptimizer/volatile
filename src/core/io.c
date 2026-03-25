@@ -728,3 +728,102 @@ bool tiff_write(const char *path, const image *img) {
   fclose(f);
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// tiff_write_multipage — multi-page TIFF for 3D stacks
+//
+// Layout: header (8 bytes), then for each page: image data then IFD.
+// Each IFD's next-IFD pointer links to the next page's IFD (0 for last).
+//
+// Supports: uint8, uint16, float32 (SampleFormat=3); 1 or 3 channels.
+// ---------------------------------------------------------------------------
+
+bool tiff_write_multipage(const char *path, const void **pages, int depth,
+                          int width, int height, dtype_t dtype, int channels) {
+  if (!path || !pages || depth < 1 || width < 1 || height < 1) return false;
+  if (channels != 1 && channels != 3) return false;
+  if (dtype != DTYPE_U8 && dtype != DTYPE_U16 && dtype != DTYPE_F32) return false;
+
+  FILE *f = fopen(path, "wb");
+  if (!f) return false;
+
+  uint16_t bps        = (uint16_t)(dtype_size(dtype) * 8);
+  uint16_t sample_fmt = (dtype == DTYPE_F32) ? 3 : 1;  // 1=uint, 3=IEEE float
+  uint32_t row_bytes  = (uint32_t)(width * channels) * (bps / 8);
+  uint32_t img_bytes  = row_bytes * (uint32_t)height;
+
+  // Per-page layout (relative to start of page block):
+  //   data: img_bytes
+  //   IFD:  2 + n_tags*12 + 4 bytes
+  //   extra: rationals (16 bytes) + optional bps_data (6 bytes for RGB)
+  uint16_t n_tags     = (uint16_t)(channels == 3 ? 16 : 15);  // +SamplesPerPixel, +BitsPerSample offset, +SampleFormat
+  uint32_t ifd_bytes  = 2u + (uint32_t)n_tags * 12u + 4u;
+  uint32_t extra_base = ifd_bytes;                              // rationals start here (relative to IFD start)
+  uint32_t bps_off_rel= extra_base + 16u;                       // bps data after 2 rationals
+
+  // Pre-compute absolute offsets for all pages.
+  // Page i: data_off[i] = 8 + sum_{j<i}(img_bytes + ifd_bytes + 16 + [6 if RGB])
+  uint32_t extra_per_page = 16u + (uint32_t)(channels == 3 ? 6u : 0u);
+  uint32_t page_stride    = img_bytes + ifd_bytes + extra_per_page;
+
+  fwrite("II", 1, 2, f);           // little-endian byte order
+  w16(f, 42);                       // TIFF magic
+  w32(f, 8u + img_bytes);           // first IFD offset = after first page's data
+
+  for (int pg = 0; pg < depth; pg++) {
+    uint32_t data_off = 8u + (uint32_t)pg * page_stride;
+    uint32_t ifd_off  = data_off + img_bytes;
+    uint32_t rat_off  = ifd_off + extra_base;
+    uint32_t bps_off  = ifd_off + bps_off_rel;
+    uint32_t next_ifd = (pg + 1 < depth) ? (ifd_off + page_stride) : 0u;
+
+    // Write image data for this page.
+    fwrite(pages[pg], 1, img_bytes, f);
+
+    // IFD
+    w16(f, n_tags);
+    ifd_entry(f, 256, 4, 1, (uint32_t)width);
+    ifd_entry(f, 257, 4, 1, (uint32_t)height);
+    if (channels == 1) {
+      ifd_entry(f, 258, 3, 1, bps);
+    } else {
+      ifd_entry(f, 258, 3, 3, bps_off);
+    }
+    ifd_entry(f, 259, 3, 1, 1);                                     // Compression=none
+    ifd_entry(f, 262, 3, 1, (uint32_t)(channels == 1 ? 1u : 2u));  // PhotometricInterp
+    ifd_entry(f, 273, 4, 1, data_off);                              // StripOffsets
+    ifd_entry(f, 278, 4, 1, (uint32_t)height);                     // RowsPerStrip
+    ifd_entry(f, 279, 4, 1, img_bytes);                             // StripByteCounts
+    ifd_entry(f, 280, 3, 1, 0);                                     // MinSampleValue
+    ifd_entry(f, 281, 3, 1, (bps == 8u ? 255u : (bps == 16u ? 65535u : 0u)));
+    ifd_entry(f, 282, 5, 1, rat_off);                               // XResolution
+    ifd_entry(f, 283, 5, 1, rat_off + 8u);                         // YResolution
+    ifd_entry(f, 284, 3, 1, 1);                                     // PlanarConfig=contiguous
+    ifd_entry(f, 296, 3, 1, 1);                                     // ResolutionUnit=none
+    ifd_entry(f, 339, 3, 1, sample_fmt);                            // SampleFormat
+    if (channels == 3)
+      ifd_entry(f, 277, 3, 1, 3);                                   // SamplesPerPixel=3
+    w32(f, next_ifd);
+
+    // Rational extras: XRes=1/1, YRes=1/1
+    w32(f, 1); w32(f, 1);
+    w32(f, 1); w32(f, 1);
+    if (channels == 3) { w16(f, bps); w16(f, bps); w16(f, bps); }
+  }
+
+  fclose(f);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// tiff_write_xyz — 3-channel float32 TIFF (tifxyz format)
+//
+// xyz: float[height * width * 3], channels=RGB=XYZ interleaved.
+// Uses tiff_write_multipage with a single page, float32, 3 channels.
+// ---------------------------------------------------------------------------
+
+bool tiff_write_xyz(const char *path, const float *xyz, int width, int height) {
+  if (!path || !xyz || width < 1 || height < 1) return false;
+  const void *pages[1] = { xyz };
+  return tiff_write_multipage(path, pages, 1, width, height, DTYPE_F32, 3);
+}

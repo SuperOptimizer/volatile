@@ -35,6 +35,15 @@ void nrrd_free(nrrd_data *n);
 // TIFF writer (uncompressed; RGB or grayscale, uint8 or uint16)
 bool tiff_write(const char *path, const image *img);
 
+// Write a multi-page TIFF from a 3D stack (depth slices, single channel, uint8/uint16/float32).
+// pages[i] points to one slice of width*height*channels samples.
+bool tiff_write_multipage(const char *path, const void **pages, int depth,
+                          int width, int height, dtype_t dtype, int channels);
+
+// Write a 3-channel float32 TIFF (tifxyz format: R=X, G=Y, B=Z per pixel).
+// xyz: flat array of [height][width][3] float32 values.
+bool tiff_write_xyz(const char *path, const float *xyz, int width, int height);
+
 // PPM/PGM reader/writer (simple, for debugging)
 image *ppm_read(const char *path);
 bool ppm_write(const char *path, const image *img);

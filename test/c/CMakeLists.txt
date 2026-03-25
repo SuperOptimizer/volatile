@@ -12,6 +12,7 @@ set(_core_only_tests
   test_math test_geom test_imgproc test_io test_net
   test_vol test_cache test_compress4d test_compress4d_zarr test_vol_mirror
   test_real_data test_tracer
+  test_umbilicus test_lineseg test_slicing
 )
 
 # core + render

@@ -20,6 +20,9 @@ add_library(volatile_core STATIC
   sparse.c
   project.c
   tracer.c
+  umbilicus.c
+  slicing.c
+  lineseg.c
 )
 
 target_include_directories(volatile_core PUBLIC
