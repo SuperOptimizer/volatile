@@ -26,7 +26,7 @@ set(_gpu_tests
 
 # core + server
 set(_server_tests
-  test_db test_protocol test_srv test_review
+  test_db test_protocol test_srv test_review test_gitstore
 )
 
 # core + server + render (collab uses overlay_list)
@@ -50,6 +50,23 @@ set(_gui_tests
   test_toolbar
 )
 
+# ---------------------------------------------------------------------------
+# bench_compress4d — NOT a ctest; run manually: ./build/test/c/bench_compress4d
+# ---------------------------------------------------------------------------
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench_compress4d.c")
+  add_executable(bench_compress4d bench_compress4d.c)
+  target_include_directories(bench_compress4d PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${greatest_SOURCE_DIR}
+  )
+  target_link_libraries(bench_compress4d PRIVATE volatile_core blosc2_static m)
+  set_target_properties(bench_compress4d PROPERTIES
+    C_STANDARD 23
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+  )
+endif()
+
 # test_sync: compile sync.c directly with an inline mock gitstore (avoids
 # duplicate-symbol clash if gitstore.c is also in volatile_server).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c")
@@ -66,9 +83,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c")
   set_tests_properties(test_sync PROPERTIES TIMEOUT 10)
 endif()
 
+# tests handled specially above (not processed by the generic loop)
+set(_special_tests test_sync)
+
 # tests not listed above (e.g. CLI tests) get core only
 foreach(_src IN LISTS _test_sources)
   get_filename_component(_name ${_src} NAME_WE)
+  if(_name IN_LIST _special_tests)
+    continue()
+  endif()
 
   if(_name IN_LIST _gui_tests)
     # GUI tests: only add executable if volatile_gui target exists

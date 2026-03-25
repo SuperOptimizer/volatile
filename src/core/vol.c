@@ -1,4 +1,5 @@
 #include "core/vol_internal.h"
+#include "core/compress4d_zarr.h"
 #include "core/io.h"
 #include "core/json.h"
 #include "core/log.h"
@@ -136,6 +137,9 @@ static void parse_v3_codecs(const json_value *codecs, zarr_level_meta *out) {
       strncpy(out->compressor_id, "zstd", sizeof(out->compressor_id) - 1);
       if (cfg && json_typeof(cfg) == JSON_OBJECT)
         out->compressor_clevel = (int)json_get_int(json_object_get(cfg, "level"), 5);
+    } else if (strcmp(name, "compress4d") == 0) {
+      strncpy(out->compressor_id, "compress4d", sizeof(out->compressor_id) - 1);
+      // quality/levels stored in config but not in zarr_level_meta; decoded at runtime
     } else if (strcmp(name, "sharding_indexed") == 0) {
       out->sharded = true;
       if (cfg && json_typeof(cfg) == JSON_OBJECT) {
@@ -449,9 +453,11 @@ static uint8_t *blosc2_decompress_chunk(const uint8_t *src, size_t src_size, siz
 static uint8_t *decompress_buf(const zarr_level_meta *m, const uint8_t *src, size_t src_size,
                                size_t *out_size) {
   if (m->compressor_id[0] != '\0') {
-    // currently only blosc/blosc2 supported at runtime; fall through for others
     if (strncmp(m->compressor_id, "blosc", 5) == 0 || strcmp(m->compressor_id, "zstd") == 0) {
       return blosc2_decompress_chunk(src, src_size, out_size);
+    }
+    if (strcmp(m->compressor_id, "compress4d") == 0) {
+      return compress4d_zarr_decode(src, src_size, out_size, NULL);
     }
   }
   // raw / unrecognised — return a copy

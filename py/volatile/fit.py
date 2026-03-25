@@ -212,11 +212,15 @@ def grid_sample_px(image: "Tensor", xy_px: "Tensor") -> "Tensor":
   for bi in range(n):
     xs = xy_np[bi, :, :, 0]   # (Hq, Wq)
     ys = xy_np[bi, :, :, 1]
-    x0 = np.floor(xs).astype(np.int32); x1 = x0 + 1
-    y0 = np.floor(ys).astype(np.int32); y1 = y0 + 1
-    wx1 = (xs - x0).astype(np.float32); wx0 = 1.0 - wx1
-    wy1 = (ys - y0).astype(np.float32); wy0 = 1.0 - wy1
-    valid = (x0 >= 0) & (x1 < w) & (y0 >= 0) & (y1 < h)
+    # Integer floor coords; for pixels exactly on the right/bottom border x1==w
+    # is still valid — we clamp and let wx1=0 handle it.
+    x0 = np.floor(xs).astype(np.int32)
+    y0 = np.floor(ys).astype(np.int32)
+    x1 = x0 + 1; y1 = y0 + 1
+    wx1 = (xs - x0.astype(np.float32)).astype(np.float32); wx0 = 1.0 - wx1
+    wy1 = (ys - y0.astype(np.float32)).astype(np.float32); wy0 = 1.0 - wy1
+    # A sample is valid if the floor corner is inside the image bounds.
+    valid = (x0 >= 0) & (x0 < w) & (y0 >= 0) & (y0 < h)
     x0c = np.clip(x0, 0, w - 1); x1c = np.clip(x1, 0, w - 1)
     y0c = np.clip(y0, 0, h - 1); y1c = np.clip(y1, 0, h - 1)
     for ci in range(c):

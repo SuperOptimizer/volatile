@@ -65,7 +65,10 @@ class RandomFlip(Transform):
       if np.random.random() < self.p:
         image = np.flip(image, axis=ax).copy()
         if mask is not None:
-          mask = np.flip(mask, axis=ax).copy()
+          # image is (C, H, W) so axis 1=H, 2=W; mask is (H, W) so axis 0=H, 1=W
+          mask_ax = ax - 1 if mask.ndim < image.ndim else ax
+          if 0 <= mask_ax < mask.ndim:
+            mask = np.flip(mask, axis=mask_ax).copy()
     return image, mask
 
 

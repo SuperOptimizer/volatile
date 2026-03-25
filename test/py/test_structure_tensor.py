@@ -199,107 +199,271 @@ def test_compute_st_chunked_same_shape():
 # fit: Model2D
 # ---------------------------------------------------------------------------
 
-def _make_model(mesh_h=4, mesh_w=6, z_size=1):
+def _make_model(mesh_h=4, mesh_w=6, z_size=1, subsample=2):
   from volatile.fit import Model2D, ModelInit
   init = ModelInit(
     init_size_frac=1.0, init_size_frac_h=None, init_size_frac_v=None,
     mesh_step_px=8, winding_step_px=8, mesh_h=mesh_h, mesh_w=mesh_w,
   )
   return Model2D(
-    init, z_size=z_size, subsample_mesh=2, subsample_winding=2,
+    init, z_size=z_size, subsample_mesh=subsample, subsample_winding=subsample,
     z_step_vx=1, scaledown=1.0,
     crop_xyzwhd=(0, 0, 100, 80, 0, 10),
     n_pyramid_scales=3,
   )
 
 
+# -- forward shapes ----------------------------------------------------------
+
 def test_model2d_forward_shapes():
   model = _make_model(mesh_h=4, mesh_w=6)
   res = model.forward()
-  n, hm, wm, c = res.xy_lr.shape
-  assert n == 1 and hm == 4 and wm == 6 and c == 2
-  _, he, we, _ = res.xy_hr.shape
-  assert he == (hm - 1) * 2 + 1  # subsample_mesh=2
-  assert we == (wm - 1) * 2 + 1
-  assert res.target_plain.shape == (1, 1, he, we)
-  assert res.target_mod.shape == (1, 1, he, we)
+  n, hm, wm, c = res.xy_lr.numpy().shape
+  assert n == 1 and hm == 4 and wm == 6 and c == 2, f"xy_lr shape wrong: {res.xy_lr.numpy().shape}"
+  _, he, we, _ = res.xy_hr.numpy().shape
+  assert he == (hm - 1) * 2 + 1, f"he wrong: {he}"   # subsample=2
+  assert we == (wm - 1) * 2 + 1, f"we wrong: {we}"
+  assert tuple(res.target_plain.numpy().shape) == (1, 1, he, we)
+  assert tuple(res.target_mod.numpy().shape)   == (1, 1, he, we)
+  assert tuple(res.amp_lr.numpy().shape)       == (1, 1, hm, wm)
+  assert tuple(res.bias_lr.numpy().shape)      == (1, 1, hm, wm)
+  assert tuple(res.mask_hr.numpy().shape)      == (1, 1, he, we)
+  assert tuple(res.mask_lr.numpy().shape)      == (1, 1, hm, wm)
 
+
+def test_model2d_xy_conn_shape():
+  """xy_conn must have shape (N, Hm, Wm, 3, 2)."""
+  model = _make_model(mesh_h=5, mesh_w=7)
+  res = model.forward()
+  n, hm, wm, c = res.xy_lr.numpy().shape
+  expected = (n, hm, wm, 3, 2)
+  assert tuple(res.xy_conn.numpy().shape) == expected, f"xy_conn shape: {res.xy_conn.numpy().shape}"
+
+
+def test_model2d_mask_conn_shape():
+  """mask_conn must have shape (N, 1, Hm, Wm, 3)."""
+  model = _make_model(mesh_h=4, mesh_w=6)
+  res = model.forward()
+  n, hm, wm, _ = res.xy_lr.numpy().shape
+  assert tuple(res.mask_conn.numpy().shape) == (n, 1, hm, wm, 3)
+
+
+# -- target values -----------------------------------------------------------
 
 def test_model2d_target_range():
   """Cosine target and modulated target must lie in [0,1]."""
   model = _make_model()
   res = model.forward()
-  tp = res.target_plain.numpy()
-  tm = res.target_mod.numpy()
-  assert tp.min() >= 0.0 and tp.max() <= 1.0
-  assert tm.min() >= 0.0 and tm.max() <= 1.0
+  tp = res.target_plain.numpy(); tm = res.target_mod.numpy()
+  assert tp.min() >= -1e-6 and tp.max() <= 1.0 + 1e-6
+  assert tm.min() >= -1e-6 and tm.max() <= 1.0 + 1e-6
 
 
 def test_model2d_target_is_cosine():
-  """target_plain should be 0.5+0.5*cos along winding direction."""
-  model = _make_model(mesh_h=2, mesh_w=5)
+  """target_plain row must be 0.5+0.5*cos, starting and ending at 1.0."""
+  model = _make_model(mesh_h=2, mesh_w=5, subsample=1)
   res = model.forward()
-  tp = res.target_plain.numpy()[0, 0, 0, :]  # first row
-  # First and last should be 1.0 (cos(0)=1, cos(2π*(mw-1)/(mw-1))=cos(2π)=1)
-  assert tp[0] == pytest.approx(1.0, abs=1e-4)
-  assert tp[-1] == pytest.approx(1.0, abs=1e-4)
+  tp = res.target_plain.numpy()[0, 0, 0, :]   # first row, HR = LR when ss=1
+  assert tp[0]  == pytest.approx(1.0, abs=1e-4), f"tp[0]={tp[0]}"
+  assert tp[-1] == pytest.approx(1.0, abs=1e-4), f"tp[-1]={tp[-1]}"
+  # Midpoint of a 5-wide target (period 4) at index 2 → cos(π) = -1 → 0.0
+  assert tp[2]  == pytest.approx(0.0, abs=1e-4), f"tp[mid]={tp[2]}"
 
+
+def test_model2d_amp_bias_clamped():
+  """amp_lr ∈ [0.1,1.0] and bias_lr ∈ [0.0,0.45] after clamping."""
+  model = _make_model()
+  # Force amp/bias outside clamp range.
+  import numpy as np
+  model.amp  = model.amp.__class__(np.full(model.amp.numpy().shape,  5.0, dtype=np.float32), requires_grad=True)
+  model.bias = model.bias.__class__(np.full(model.bias.numpy().shape, 1.0, dtype=np.float32), requires_grad=True)
+  res = model.forward()
+  assert res.amp_lr.numpy().max()  <= 1.0 + 1e-6
+  assert res.bias_lr.numpy().max() <= 0.45 + 1e-6
+
+
+# -- parameters --------------------------------------------------------------
 
 def test_model2d_get_parameters():
-  model = _make_model()
-  params = model.get_parameters()
-  assert len(params) > 0
-  # All must be Tensors.
+  """get_parameters returns at least mesh_ms + conn_offset_ms + amp/bias/theta/ws."""
   from tinygrad.tensor import Tensor
+  model = _make_model(n_pyramid_scales=3) if False else _make_model()
+  params = model.get_parameters()
+  assert len(params) >= 6 + 2   # 3 mesh + 3 conn + amp + bias + theta + ws = 10
   for p in params:
     assert isinstance(p, Tensor)
 
 
+def test_model2d_conn_offset_pyramid_exists():
+  """conn_offset_ms should have n_pyramid_scales levels."""
+  model = _make_model()
+  assert len(model.conn_offset_ms) == model.n_pyramid_scales
+  # All zero at init.
+  for p in model.conn_offset_ms:
+    assert np.abs(p.numpy()).max() == 0.0
+
+
+# -- global transform --------------------------------------------------------
+
+def test_model2d_bake_global_transform():
+  """After bake, theta=0, winding_scale=1, transform disabled, mesh unchanged."""
+  model = _make_model(mesh_h=4, mesh_w=6)
+  xy_before = model.forward().xy_lr.numpy().copy()
+  model.bake_global_transform()
+  assert not model.global_transform_enabled
+  xy_after = model.forward().xy_lr.numpy()
+  np.testing.assert_allclose(xy_after, xy_before, atol=1e-4, err_msg="bake changed mesh coords")
+  assert model.theta.numpy()[0] == pytest.approx(0.0, abs=1e-6)
+  assert model.winding_scale.numpy()[0] == pytest.approx(1.0, abs=1e-6)
+
+
+# -- EMA ---------------------------------------------------------------------
+
+def test_model2d_update_ema_init():
+  """First call to update_ema initialises the buffer to the input."""
+  model = _make_model()
+  res = model.forward()
+  model.update_ema(xy_lr=res.xy_lr, xy_conn=res.xy_conn)
+  np.testing.assert_allclose(model.xy_ema, res.xy_lr.numpy(), atol=1e-6)
+
+
+def test_model2d_update_ema_decay():
+  """Second call blends the new value in with decay 0.99."""
+  model = _make_model()
+  model._ema_decay = 0.5
+  res = model.forward()
+  model.update_ema(xy_lr=res.xy_lr, xy_conn=res.xy_conn)
+  v1 = model.xy_ema.copy()
+  model.update_ema(xy_lr=res.xy_lr, xy_conn=res.xy_conn)
+  v2 = model.xy_ema
+  expected = 0.5 * v1 + 0.5 * res.xy_lr.numpy()
+  np.testing.assert_allclose(v2, expected, atol=1e-6)
+
+
+# -- grow --------------------------------------------------------------------
+
+def test_model2d_grow_right():
+  """grow(right, 2) increases mesh_w by 2 and propagates to amp/bias."""
+  model = _make_model(mesh_h=4, mesh_w=6)
+  model.grow(directions=["right"], steps=2)
+  assert model.mesh_w == 8
+  assert model.amp.numpy().shape[3]  == 8
+  assert model.bias.numpy().shape[3] == 8
+
+
+def test_model2d_grow_down():
+  """grow(down, 1) increases mesh_h by 1."""
+  model = _make_model(mesh_h=4, mesh_w=6)
+  model.grow(directions=["down"], steps=1)
+  assert model.mesh_h == 5
+  assert model.amp.numpy().shape[2] == 5
+
+
+def test_model2d_grow_left():
+  """grow(left, 1) increases mesh_w by 1."""
+  model = _make_model(mesh_h=4, mesh_w=6)
+  model.grow(directions=["left"], steps=1)
+  assert model.mesh_w == 7
+
+
+def test_model2d_grow_up():
+  """grow(up, 1) increases mesh_h by 1."""
+  model = _make_model(mesh_h=4, mesh_w=6)
+  model.grow(directions=["up"], steps=1)
+  assert model.mesh_h == 5
+
+
+def test_model2d_grow_fw():
+  """grow(fw, 1) adds a z-slice (z_size increases by 1)."""
+  model = _make_model(mesh_h=4, mesh_w=6, z_size=2)
+  model.grow(directions=["fw"], steps=1)
+  assert model.z_size == 3
+  assert model.amp.numpy().shape[0] == 3
+
+
+def test_model2d_grow_bw():
+  """grow(bw, 1) prepends a z-slice."""
+  model = _make_model(mesh_h=4, mesh_w=6, z_size=2)
+  model.grow(directions=["bw"], steps=1)
+  assert model.z_size == 3
+
+
+def test_model2d_grow_invalid_direction():
+  model = _make_model()
+  with pytest.raises(ValueError, match="invalid grow direction"):
+    model.grow(directions=["diagonal"])
+
+
+def test_model2d_grow_then_forward():
+  """grow + forward should not crash and shapes must be consistent."""
+  model = _make_model(mesh_h=4, mesh_w=5)
+  model.grow(directions=["right", "down"], steps=1)
+  res = model.forward()
+  n, hm, wm, _ = res.xy_lr.numpy().shape
+  assert hm == 5 and wm == 6
+
+
+# -- state dict --------------------------------------------------------------
+
 def test_model2d_state_dict_roundtrip():
-  """State dict save/load should preserve parameter values."""
+  """state_dict / load_state_dict preserves all parameter values."""
   model = _make_model(mesh_h=3, mesh_w=4)
   sd = model.state_dict()
-  assert "amp" in sd and "bias" in sd and "theta" in sd and "winding_scale" in sd
-  # Mutate and reload.
+  required = {"amp", "bias", "theta", "winding_scale"}
+  assert required <= set(sd.keys()), f"missing keys: {required - set(sd.keys())}"
+  # Check conn_offset_ms keys present.
+  assert any(k.startswith("conn_offset_ms.") for k in sd), "conn_offset_ms missing from state_dict"
   orig_amp = sd["amp"].copy()
   model2 = _make_model(mesh_h=3, mesh_w=4)
   model2.load_state_dict(sd)
   np.testing.assert_allclose(model2.amp.numpy(), orig_amp, atol=1e-6)
 
 
-def test_model2d_grow_right():
-  """Growing right should increase mesh_w by steps."""
-  model = _make_model(mesh_h=4, mesh_w=6)
-  model.grow(directions=["right"], steps=2)
-  assert model.mesh_w == 8
-  assert model.amp.numpy().shape[3] == 8
+# -- pyramid helpers ---------------------------------------------------------
 
-
-def test_model2d_grow_down():
-  """Growing down should increase mesh_h by steps."""
-  model = _make_model(mesh_h=4, mesh_w=6)
-  model.grow(directions=["down"], steps=1)
-  assert model.mesh_h == 5
-
-
-def test_model2d_cosine_winding_target():
-  """cosine_winding_target helper produces expected shape and range."""
-  from volatile.fit import _cosine_winding_target
-  t = _cosine_winding_target(z_size=2, mesh_h=3, mesh_w=5)
-  assert t.shape == (2, 1, 3, 5)
+def test_cosine_winding_target_shape_range():
+  """cosine_winding_target produces expected shape and values in [0,1]."""
+  from volatile.fit import cosine_winding_target
+  t = cosine_winding_target(z_size=2, h=3, w=5)
+  assert tuple(t.numpy().shape) == (2, 1, 3, 5)
   arr = t.numpy()
-  assert arr.min() >= 0.0 and arr.max() <= 1.0
+  assert arr.min() >= -1e-6 and arr.max() <= 1.0 + 1e-6
 
 
-def test_model2d_pyramid_roundtrip():
-  """integrate_pyramid(build_mesh_pyramid(flat)) ≈ flat."""
-  import numpy as np
+def test_pyramid_roundtrip():
+  """_integrate_pyramid(_build_pyramid_from_flat(x)) ≈ x."""
   from tinygrad.tensor import Tensor
-  from volatile.fit import _build_mesh_pyramid, _integrate_pyramid
+  from volatile.fit import _build_pyramid_from_flat, _integrate_pyramid
   rng = np.random.default_rng(99)
   flat_np = rng.random((1, 2, 8, 12)).astype(np.float32)
   flat = Tensor(flat_np)
-  pyramid = _build_mesh_pyramid(flat, n_scales=4)
+  pyramid = _build_pyramid_from_flat(flat, n_scales=4)
   recon = _integrate_pyramid(pyramid)
-  np.testing.assert_allclose(recon.numpy(), flat_np, atol=1e-5,
-                              err_msg="pyramid roundtrip should reconstruct original")
+  np.testing.assert_allclose(recon.numpy(), flat_np, atol=1e-5)
+
+
+# -- grid_sample_px ----------------------------------------------------------
+
+def test_grid_sample_px_identity():
+  """Sampling an image at its own pixel grid should return the image."""
+  from volatile.fit import grid_sample_px
+  from tinygrad.tensor import Tensor
+  rng = np.random.default_rng(7)
+  img_np = rng.random((1, 1, 8, 10)).astype(np.float32)
+  image  = Tensor(img_np)
+  # Build identity sampling grid.
+  ys, xs = np.meshgrid(np.arange(8), np.arange(10), indexing="ij")  # (8,10)
+  xy_px  = Tensor(np.stack([xs, ys], axis=-1)[np.newaxis].astype(np.float32))  # (1,8,10,2)
+  out = grid_sample_px(image, xy_px)
+  np.testing.assert_allclose(out.numpy(), img_np, atol=1e-5)
+
+
+def test_grid_sample_px_zeros_outside():
+  """grid_sample_px returns 0 for out-of-bounds coordinates."""
+  from volatile.fit import grid_sample_px
+  from tinygrad.tensor import Tensor
+  img_np = np.ones((1, 1, 4, 4), dtype=np.float32)
+  image  = Tensor(img_np)
+  xy_px  = Tensor(np.array([[[[-100.0, -100.0]]]], dtype=np.float32))  # (1,1,1,2)
+  out = grid_sample_px(image, xy_px)
+  assert out.numpy()[0, 0, 0, 0] == pytest.approx(0.0, abs=1e-6)

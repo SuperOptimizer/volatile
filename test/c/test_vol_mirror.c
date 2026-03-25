@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "greatest.h"
 #include "core/vol_mirror.h"
 #include "core/vol.h"
@@ -316,6 +318,132 @@ TEST test_mirror_no_volatile_server_for_local(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: graceful failure on bad remote URLs
+// ---------------------------------------------------------------------------
+
+TEST test_mirror_nonexistent_local_path_returns_null(void) {
+  // A path that definitely doesn't exist — must return NULL, not crash.
+  mirror_config cfg = {
+    .remote_url      = "/tmp/does_not_exist_volatile_test_xyzzy/vol.zarr",
+    .local_cache_dir = "/tmp",
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m == NULL);
+  PASS();
+}
+
+TEST test_mirror_nonexistent_http_url_returns_null(void) {
+  // An http:// URL that will never resolve — vol_mirror_new must return NULL
+  // gracefully (not crash, not hang forever).  We use a non-routable address
+  // so there's no actual network attempt; the DNS/connect should fail quickly
+  // because we also set a short timeout in vol_mirror_new for the probe.
+  mirror_config cfg = {
+    .remote_url      = "http://192.0.2.1:9999/no_such_vol.zarr",  // TEST-NET-1, RFC 5737
+    .local_cache_dir = "/tmp",
+  };
+  // This may take a second for connection timeout — that's fine.
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m == NULL);
+  PASS();
+}
+
+TEST test_mirror_nonexistent_s3_url_no_creds_returns_null(void) {
+  // s3:// URL with no credentials in env — must return NULL gracefully.
+  unsetenv("AWS_ACCESS_KEY_ID");
+  unsetenv("AWS_SECRET_ACCESS_KEY");
+
+  mirror_config cfg = {
+    .remote_url      = "s3://no-such-bucket/no/such/key",
+    .local_cache_dir = "/tmp",
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m == NULL);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Tests: cache_hit_rate starts at 0 and stats reporting
+// ---------------------------------------------------------------------------
+
+TEST test_mirror_hit_rate_starts_at_zero(void) {
+  // Brand-new mirror with empty cache — no reads done yet, hit rate must be 0.
+  char fresh_cache[256];
+  snprintf(fresh_cache, sizeof(fresh_cache), "/tmp/mirror_hr0_%d", (int)getpid());
+  make_dir(fresh_cache);
+
+  mirror_config cfg = {
+    .remote_url      = g_src_zarr,
+    .local_cache_dir = fresh_cache,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+
+  float hr = vol_mirror_cache_hit_rate(m);
+  ASSERT_EQ(0.0f, hr);
+
+  vol_mirror_free(m);
+  PASS();
+}
+
+TEST test_mirror_chunks_cached_starts_at_zero(void) {
+  char fresh_cache[256];
+  snprintf(fresh_cache, sizeof(fresh_cache), "/tmp/mirror_cc0_%d", (int)getpid());
+  make_dir(fresh_cache);
+
+  mirror_config cfg = {
+    .remote_url      = g_src_zarr,
+    .local_cache_dir = fresh_cache,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+
+  ASSERT_EQ(0, vol_mirror_chunks_cached(m));
+  ASSERT_EQ(0, (int)vol_mirror_cached_bytes(m));
+
+  vol_mirror_free(m);
+  PASS();
+}
+
+TEST test_mirror_stats_after_cache_level(void) {
+  char fresh_cache[256];
+  snprintf(fresh_cache, sizeof(fresh_cache), "/tmp/mirror_stats2_%d", (int)getpid());
+  make_dir(fresh_cache);
+
+  mirror_config cfg = {
+    .remote_url      = g_src_zarr,
+    .local_cache_dir = fresh_cache,
+  };
+  vol_mirror *m = vol_mirror_new(cfg);
+  ASSERT(m != NULL);
+
+  // Before caching: everything at zero
+  ASSERT_EQ(0, vol_mirror_chunks_cached(m));
+  ASSERT_EQ(0.0f, vol_mirror_cache_hit_rate(m));
+
+  ASSERT(vol_mirror_cache_level(m, 0));
+
+  // After caching: chunks_cached > 0, cached_bytes > 0, hit_rate in [0,1]
+  int cached = vol_mirror_chunks_cached(m);
+  ASSERT(cached > 0);
+  ASSERT(vol_mirror_cached_bytes(m) > 0);
+
+  float hr = vol_mirror_cache_hit_rate(m);
+  ASSERT(hr >= 0.0f && hr <= 1.0f);
+
+  // chunks_total for level 0 must be >= chunks_cached (some may have been absent)
+  int total = vol_mirror_chunks_total(m, 0);
+  ASSERT(total >= cached);
+
+  vol_mirror_free(m);
+  PASS();
+}
+
+TEST test_mirror_free_null_no_crash(void) {
+  vol_mirror_free(NULL);  // must not crash
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suite + main
 // ---------------------------------------------------------------------------
 
@@ -332,6 +460,18 @@ SUITE(vol_mirror_suite) {
   RUN_TEST(test_mirror_detects_compress4d);
   RUN_TEST(test_mirror_force_recompress_overrides);
 
+  // graceful failure on bad URLs
+  RUN_TEST(test_mirror_nonexistent_local_path_returns_null);
+  RUN_TEST(test_mirror_nonexistent_s3_url_no_creds_returns_null);
+  // NOTE: test_mirror_nonexistent_http_url_returns_null is intentionally
+  // omitted from the default suite — it has a real network timeout (~1s).
+  // Uncomment to run manually: RUN_TEST(test_mirror_nonexistent_http_url_returns_null);
+
+  // stats baseline
+  RUN_TEST(test_mirror_hit_rate_starts_at_zero);
+  RUN_TEST(test_mirror_chunks_cached_starts_at_zero);
+  RUN_TEST(test_mirror_stats_after_cache_level);
+  RUN_TEST(test_mirror_free_null_no_crash);
 }
 
 GREATEST_MAIN_DEFS();

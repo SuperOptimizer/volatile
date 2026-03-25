@@ -82,8 +82,13 @@ bool git_store_lfs_track(git_store *g, const char *p) { (void)g;(void)p; return 
 int  git_store_modified_count(git_store *g) { return g->dirty ? 1 : 0; }
 bool git_store_is_clean(git_store *g) { return !g->dirty; }
 
-// MSG_SEGMENT_UPDATE broadcast stub (server is NULL in tests)
-// server_broadcast is a no-op when srv==NULL — handled in sync.c already.
+// server_broadcast stub — sync.c guards with `if (s->srv)` so this is
+// never called in these tests, but the linker still needs the symbol.
+#include "server/srv.h"
+void server_broadcast(vol_server *s, msg_type_t type,
+                      const uint8_t *payload, uint32_t len) {
+  (void)s; (void)type; (void)payload; (void)len;
+}
 
 // ---------------------------------------------------------------------------
 // Reset mock state between tests

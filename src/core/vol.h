@@ -17,6 +17,7 @@ typedef struct {
   int compressor_clevel;     // compression level
   int compressor_shuffle;    // 0=none, 1=byte, 2=bit
   char order;                // 'C' or 'F'
+  char chunk_sep;            // chunk key separator: '.' (default v2) or '/' (dimension_separator="/")
   // Zarr v3 extensions
   int zarr_version;          // 2 or 3
   bool sharded;              // true when outermost codec is sharding_indexed

@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Standard release build + tests
+  # -------------------------------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            ninja-build \
+            libcurl4-openssl-dev \
+            libsqlite3-dev \
+            libvulkan-dev \
+            libsdl3-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: |
+          ctest --test-dir build \
+                --timeout 10 \
+                --output-on-failure \
+                -E "test_srv|test_gpu|test_vk"
+
+  # -------------------------------------------------------------------------
+  # AddressSanitizer + UBSan build
+  # -------------------------------------------------------------------------
+  build-asan:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            ninja-build \
+            libcurl4-openssl-dev \
+            libsqlite3-dev \
+            libvulkan-dev \
+            libsdl3-dev
+
+      - name: Configure (ASAN + UBSan)
+        run: |
+          cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DVOLATILE_ENABLE_ASAN=ON \
+                -DVOLATILE_ENABLE_UBSAN=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          ctest --test-dir build \
+                --timeout 30 \
+                --output-on-failure \
+                -E "test_srv|test_gpu|test_vk"
+
+  # -------------------------------------------------------------------------
+  # Python tests
+  # -------------------------------------------------------------------------
+  python-tests:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: pip install tinygrad pytest numpy
+
+      - name: Run Python tests
+        run: |
+          PYTHONPATH=py pytest test/py/ \
+                --import-mode=importlib \
+                -v \
+                --tb=short

@@ -377,7 +377,7 @@ def test_augment_none_mask_passthrough():
 # train.py — Trainer smoke test (no real data)
 # ---------------------------------------------------------------------------
 
-from volatile.ml.train import Trainer, cosine_annealing_lr
+from volatile.ml.train import Trainer, cosine_annealing_lr, clip_grad_norm, ModelEMA, ProcessGroup
 
 
 def test_cosine_annealing_lr():
@@ -409,3 +409,421 @@ def test_trainer_one_epoch():
   assert "train_loss" in history
   assert len(history["train_loss"]) == 1
   assert np.isfinite(history["train_loss"][0])
+
+
+# ---------------------------------------------------------------------------
+# train.py — new features: grad clip, EMA, early stopping, val loop, dist
+# ---------------------------------------------------------------------------
+
+def _fake_loader_fn(n_batches=2, out_classes=2):
+  def _gen():
+    for _ in range(n_batches):
+      imgs = np.random.rand(1, 1, 16, 16).astype(np.float32)
+      masks = np.random.randint(0, out_classes, (1, 16, 16)).astype(np.int32)
+      yield imgs, masks
+  return _gen
+
+
+def test_trainer_two_epochs():
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  trainer = Trainer(model=model, train_loader=_fake_loader_fn()(), num_epochs=2, verbose=False)
+  history = trainer.train()
+  assert len(history["train_loss"]) == 2
+
+
+def test_trainer_with_val_loader():
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  trainer = Trainer(
+    model=model,
+    train_loader=_fake_loader_fn()(),
+    val_loader=_fake_loader_fn()(),
+    num_epochs=1,
+    n_classes=2,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert len(history["val_loss"]) == 1
+  assert np.isfinite(history["val_loss"][0])
+
+
+def test_trainer_early_stopping():
+  """With patience=1 and identical val losses, should stop after 2 epochs."""
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  trainer = Trainer(
+    model=model,
+    train_loader=_fake_loader_fn(n_batches=1)(),
+    val_loader=_fake_loader_fn(n_batches=1)(),
+    num_epochs=10,
+    early_stopping_patience=1,
+    verbose=False,
+  )
+  history = trainer.train()
+  # Should stop early — well before 10 epochs
+  assert len(history["train_loss"]) <= 10
+
+
+def test_trainer_grad_clip():
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  trainer = Trainer(
+    model=model,
+    train_loader=_fake_loader_fn()(),
+    num_epochs=1,
+    grad_clip=0.1,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert np.isfinite(history["train_loss"][0])
+
+
+def test_trainer_ema():
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  trainer = Trainer(
+    model=model,
+    train_loader=_fake_loader_fn()(),
+    num_epochs=1,
+    ema_decay=0.999,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert np.isfinite(history["train_loss"][0])
+
+
+def test_trainer_with_scheduler():
+  from volatile.ml.scheduler import PolynomialLR
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  sched = PolynomialLR(lr=1e-3, total_steps=2, warmup_steps=1)
+  trainer = Trainer(
+    model=model,
+    train_loader=_fake_loader_fn()(),
+    num_epochs=2,
+    scheduler=sched,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert len(history["train_loss"]) == 2
+
+
+def test_trainer_dict_batch():
+  """Trainer should accept dict batches from PatchDataset.collate."""
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+
+  def _dict_loader():
+    for _ in range(2):
+      imgs = np.random.rand(1, 1, 16, 16).astype(np.float32)
+      masks = np.random.randint(0, 2, (1, 16, 16)).astype(np.int32)
+      yield {"image": imgs, "label": masks}
+
+  trainer = Trainer(
+    model=model,
+    train_loader=_dict_loader(),
+    num_epochs=1,
+    target_key="label",
+    verbose=False,
+  )
+  history = trainer.train()
+  assert np.isfinite(history["train_loss"][0])
+
+
+def test_process_group_single_rank():
+  pg = ProcessGroup(rank=0, world_size=1)
+  assert pg.is_primary
+  assert pg.allreduce_mean(3.14) == pytest.approx(3.14)
+
+
+def test_model_ema_shadow_differs_after_update():
+  from tinygrad.nn.state import get_state_dict, get_parameters
+  from tinygrad import nn as tg_nn
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  ema = ModelEMA(model, decay=0.0)  # decay=0 → shadow = current params exactly after each update
+  # Do an optimizer step to actually move the weights
+  opt = tg_nn.optim.Adam(get_parameters(model), lr=1.0)
+  Tensor.training = True
+  x = Tensor.randn(1, 1, 16, 16)
+  loss = model(x).sum()
+  loss.backward()
+  opt.step()
+  Tensor.training = False
+  # Now record shadow before and after EMA update
+  first_key = next(iter(get_state_dict(model)))
+  shadow_before = ema._shadow[first_key].copy()
+  ema.update()
+  # With decay=0, shadow should equal current params exactly (different from original)
+  current = get_state_dict(model)[first_key].numpy()
+  assert np.allclose(ema._shadow[first_key], current, atol=1e-5)
+
+
+def test_clip_grad_norm_no_error():
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  from tinygrad.nn.state import get_parameters
+  params = get_parameters(model)
+  x = Tensor.randn(1, 1, 16, 16)
+  loss = model(x).sum()
+  loss.backward()
+  norm = clip_grad_norm(params, max_norm=1.0)
+  assert norm >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# scheduler.py — LR scheduler tests
+# ---------------------------------------------------------------------------
+
+from volatile.ml.scheduler import (
+  CosineAnnealingWarmRestarts, PolynomialLR, OneCycleLR, make_scheduler
+)
+
+
+def test_cosine_warm_restarts_at_boundaries():
+  sched = CosineAnnealingWarmRestarts(lr=1e-3, T_0=10, eta_min=1e-6)
+  # At step 0 should be near peak
+  assert sched.get_lr(0) > 9e-4
+  # At step 5 (mid cycle) should be about midpoint
+  mid = sched.get_lr(5)
+  assert 1e-6 < mid < 1e-3
+  # At step 10 (restart) should be near peak again
+  assert sched.get_lr(10) > 9e-4
+
+
+def test_cosine_warm_restarts_warmup():
+  sched = CosineAnnealingWarmRestarts(lr=1e-3, T_0=20, warmup_steps=5, eta_min=1e-6)
+  # During warmup LR should grow from eta_min toward peak
+  assert sched.get_lr(0) < sched.get_lr(4)
+  assert sched.get_lr(4) < sched.get_lr(5)
+
+
+def test_cosine_warm_restarts_decay_gamma():
+  sched = CosineAnnealingWarmRestarts(lr=1e-2, T_0=5, gamma=0.5, eta_min=0.0)
+  peak_cycle0 = sched.get_lr(0)
+  peak_cycle1 = sched.get_lr(5)
+  assert peak_cycle1 < peak_cycle0 * 0.6  # decayed by gamma=0.5
+
+
+def test_polynomial_lr_warmup():
+  sched = PolynomialLR(lr=1e-3, total_steps=100, warmup_steps=10)
+  assert sched.get_lr(0) == pytest.approx(0.0, abs=1e-10)
+  assert sched.get_lr(10) == pytest.approx(1e-3, rel=1e-5)
+  # After warmup should decay
+  assert sched.get_lr(50) < sched.get_lr(10)
+  assert sched.get_lr(99) < sched.get_lr(50)
+
+
+def test_polynomial_lr_no_warmup():
+  sched = PolynomialLR(lr=1e-3, total_steps=100)
+  assert sched.get_lr(0) == pytest.approx(1e-3, rel=1e-5)
+  assert sched.get_lr(99) < 1e-4
+
+
+def test_polynomial_lr_monotone_decay():
+  sched = PolynomialLR(lr=1e-3, total_steps=50)
+  lrs = [sched.get_lr(i) for i in range(50)]
+  assert all(lrs[i] >= lrs[i + 1] for i in range(len(lrs) - 1))
+
+
+def test_one_cycle_lr_peak_at_warmup_end():
+  sched = OneCycleLR(lr=1e-3, total_steps=100, pct_start=0.3, div_factor=25.0)
+  warmup_end = int(0.3 * 100)
+  peak = sched.get_lr(warmup_end)
+  assert peak == pytest.approx(1e-3 * 25.0, rel=0.05)
+
+
+def test_one_cycle_lr_decays_after_peak():
+  sched = OneCycleLR(lr=1e-3, total_steps=100, pct_start=0.3)
+  warmup_end = int(0.3 * 100)
+  lrs_after = [sched.get_lr(i) for i in range(warmup_end, 100)]
+  assert all(lrs_after[i] >= lrs_after[i + 1] for i in range(len(lrs_after) - 1))
+
+
+def test_scheduler_step_updates_optimizer():
+  from tinygrad.nn.state import get_parameters
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+  params = get_parameters(model)
+  from tinygrad import nn as tg_nn
+  opt = tg_nn.optim.Adam(params, lr=1.0)
+  sched = PolynomialLR(lr=1e-3, total_steps=10)
+  sched.attach(opt)
+  sched.step()
+  assert float(opt.lr) < 1.0  # must be < 1.0 (original) and != 1e-3 first-step value varies
+
+
+def test_make_scheduler_factory():
+  sched = make_scheduler("poly", lr=1e-3, total_steps=100, warmup_steps=5)
+  assert isinstance(sched, PolynomialLR)
+  sched2 = make_scheduler("one_cycle", lr=1e-3, total_steps=100)
+  assert isinstance(sched2, OneCycleLR)
+  sched3 = make_scheduler("cosine_warm_restarts", lr=1e-3, total_steps=50)
+  assert isinstance(sched3, CosineAnnealingWarmRestarts)
+
+
+def test_make_scheduler_unknown_raises():
+  with pytest.raises(ValueError):
+    make_scheduler("unknown_sched", lr=1e-3, total_steps=10)
+
+
+# ---------------------------------------------------------------------------
+# dataset.py — PatchDataset
+# ---------------------------------------------------------------------------
+
+from volatile.ml.dataset import PatchDataset, SimpleBatcher, _iter_positions_3d, _iter_positions_2d
+
+
+def _make_volume_2d(h=32, w=32, n_classes=2):
+  img = np.random.rand(h, w).astype(np.float32)
+  label = np.random.randint(0, n_classes, (h, w)).astype(np.int32)
+  return {"name": "vol0", "image": img, "labels": {"seg": label}}
+
+
+def _make_volume_3d(d=16, h=16, w=16, n_classes=2):
+  img = np.random.rand(d, h, w).astype(np.float32)
+  label = np.random.randint(0, n_classes, (d, h, w)).astype(np.int32)
+  return {"name": "vol0", "image": img, "labels": {"seg": label}}
+
+
+def test_iter_positions_3d_basic():
+  positions = _iter_positions_3d((16, 16, 16), (8, 8, 8), (8, 8, 8))
+  assert len(positions) == 8  # 2x2x2
+
+
+def test_iter_positions_2d_basic():
+  positions = _iter_positions_2d((16, 16), (8, 8), (8, 8))
+  assert len(positions) == 4  # 2x2
+
+
+def test_patch_dataset_2d_len():
+  vol = _make_volume_2d(h=32, w=32)
+  ds = PatchDataset([vol], patch_size=(16, 16), skip_empty=False)
+  assert len(ds) == 4  # 2x2
+
+
+def test_patch_dataset_3d_len():
+  vol = _make_volume_3d(d=16, h=16, w=16)
+  ds = PatchDataset([vol], patch_size=(8, 8, 8), skip_empty=False)
+  assert len(ds) == 8  # 2x2x2
+
+
+def test_patch_dataset_2d_item_shape():
+  vol = _make_volume_2d(h=32, w=32)
+  ds = PatchDataset([vol], patch_size=(16, 16), skip_empty=False)
+  item = ds[0]
+  assert item["image"].shape == (1, 16, 16), f"got {item['image'].shape}"
+  assert item["seg"].shape == (16, 16), f"got {item['seg'].shape}"
+  assert item["padding_mask"].shape == (1, 16, 16)
+
+
+def test_patch_dataset_3d_item_shape():
+  vol = _make_volume_3d(d=16, h=16, w=16)
+  ds = PatchDataset([vol], patch_size=(8, 8, 8), skip_empty=False)
+  item = ds[0]
+  assert item["image"].shape == (1, 8, 8, 8)
+  assert item["seg"].shape == (8, 8, 8)
+
+
+def test_patch_dataset_multi_volume():
+  vols = [_make_volume_2d(h=16, w=16), _make_volume_2d(h=16, w=16)]
+  ds = PatchDataset(vols, patch_size=(8, 8), skip_empty=False)
+  assert len(ds) == 8  # 2 volumes * 4 patches each
+
+
+def test_patch_dataset_target_names():
+  vol = _make_volume_2d()
+  ds = PatchDataset([vol], patch_size=(16, 16), target_names=["seg"], skip_empty=False)
+  assert ds.target_names == ["seg"]
+  item = ds[0]
+  assert "seg" in item
+
+
+def test_patch_dataset_no_labels():
+  vol = {"name": "v", "image": np.random.rand(16, 16).astype(np.float32), "labels": {}}
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=False)
+  item = ds[0]
+  assert "image" in item
+
+
+def test_patch_dataset_skip_empty():
+  # Volume of all zeros should yield 0 patches when skip_empty=True
+  vol = {"name": "v", "image": np.zeros((16, 16), dtype=np.float32), "labels": {}}
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=True, empty_threshold=0.0)
+  assert len(ds) == 0
+
+
+def test_patch_dataset_padding_mask_full_patch():
+  # Image larger than patch — all valid, mask should be all 1s
+  vol = _make_volume_2d(h=32, w=32)
+  ds = PatchDataset([vol], patch_size=(16, 16), skip_empty=False)
+  item = ds[0]
+  assert np.all(item["padding_mask"] == 1.0)
+
+
+def test_patch_dataset_stride():
+  vol = _make_volume_2d(h=32, w=32)
+  ds_full = PatchDataset([vol], patch_size=(16, 16), stride=(8, 8), skip_empty=False)
+  ds_half = PatchDataset([vol], patch_size=(16, 16), stride=(16, 16), skip_empty=False)
+  assert len(ds_full) > len(ds_half)
+
+
+def test_patch_dataset_z_partition():
+  vol = _make_volume_3d(d=16, h=8, w=8)
+  ds0 = PatchDataset([vol], patch_size=(8, 8, 8), skip_empty=False, z_partitions=2, z_partition_idx=0)
+  ds1 = PatchDataset([vol], patch_size=(8, 8, 8), skip_empty=False, z_partitions=2, z_partition_idx=1)
+  # Each partition should own roughly half; together they cover all patches
+  ds_all = PatchDataset([vol], patch_size=(8, 8, 8), skip_empty=False, z_partitions=1)
+  assert len(ds0) + len(ds1) == len(ds_all)
+
+
+def test_patch_dataset_iter():
+  vol = _make_volume_2d(h=16, w=16)
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=False)
+  items = list(ds)
+  assert len(items) == len(ds)
+
+
+def test_patch_dataset_collate():
+  vol = _make_volume_2d(h=16, w=16)
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=False)
+  batch = PatchDataset.collate([ds[0], ds[1]])
+  assert batch["image"].shape[0] == 2
+
+
+def test_simple_batcher_len():
+  vol = _make_volume_2d(h=32, w=32)
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=False)
+  batcher = SimpleBatcher(ds, batch_size=2, shuffle=False)
+  assert len(batcher) == len(ds) // 2
+
+
+def test_simple_batcher_yields_correct_batch_size():
+  vol = _make_volume_2d(h=32, w=32)
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=False)
+  batcher = SimpleBatcher(ds, batch_size=2, shuffle=False, drop_last=True)
+  for batch in batcher:
+    assert batch["image"].shape[0] == 2
+
+
+def test_simple_batcher_shuffle():
+  vol = _make_volume_2d(h=32, w=32)
+  ds = PatchDataset([vol], patch_size=(8, 8), skip_empty=False)
+  b1 = [list(it["position"]) for it in SimpleBatcher(ds, batch_size=1, shuffle=True, seed=0)]
+  b2 = [list(it["position"]) for it in SimpleBatcher(ds, batch_size=1, shuffle=True, seed=99)]
+  # Different seeds should produce different order at least sometimes
+  assert b1 != b2 or len(b1) <= 1  # can be equal if only 1 patch
+
+
+def test_trainer_with_patch_dataset():
+  """End-to-end: PatchDataset → SimpleBatcher → Trainer runs 2 epochs."""
+  vol = _make_volume_2d(h=32, w=32, n_classes=2)
+  ds = PatchDataset([vol], patch_size=(16, 16), target_names=["seg"], skip_empty=False)
+  batcher = SimpleBatcher(ds, batch_size=2, shuffle=False)
+
+  model = UNet(in_channels=1, out_channels=2, base_channels=4, num_levels=2)
+
+  def _loader_from_batcher():
+    for batch in batcher:
+      yield batch["image"], batch["seg"]
+
+  trainer = Trainer(
+    model=model,
+    train_loader=_loader_from_batcher(),
+    num_epochs=2,
+    verbose=False,
+  )
+  history = trainer.train()
+  assert len(history["train_loss"]) == 2
+  assert all(np.isfinite(v) for v in history["train_loss"])

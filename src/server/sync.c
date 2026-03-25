@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "server/sync.h"
+#include "server/srv.h"
 #include "core/log.h"
 
 #include <inttypes.h>
@@ -67,7 +68,7 @@ void sync_on_segment_edit(sync_manager *s, int user_id, int64_t segment_id,
     uint8_t msg[12];
     memcpy(msg,     &user_id,    4);
     memcpy(msg + 4, &segment_id, 8);
-    server_broadcast(s->srv, MSG_SEGMENT_UPDATE, msg, sizeof(msg));
+    server_broadcast(s->srv, MSG_SEG_UPDATE, msg, sizeof(msg));
   }
 }
 
