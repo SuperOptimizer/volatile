@@ -76,8 +76,9 @@ app_state_t *app_init(const app_config_t *cfg) {
 
   // Bake default font
   struct nk_font_atlas *atlas = nk_sdl_font_stash_begin(nk);
-  nk_font_atlas_add_default(atlas, 13.0f, NULL);
+  struct nk_font *font = nk_font_atlas_add_default(atlas, 13.0f, NULL);
   nk_sdl_font_stash_end(nk);
+  if (font) nk_style_set_font(nk, &font->handle);
 
   app_state_t *s = malloc(sizeof(*s));
   REQUIRE(s != NULL, "out of memory");

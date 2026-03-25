@@ -273,7 +273,7 @@ class SkeletonRecallLoss:
       coverage = (sp[i:i+1] * skel_w).sum() / float(total)
       batch_losses.append(1.0 - coverage)
 
-    return Tensor.stack(*batch_losses).mean() if len(batch_losses) > 1 else batch_losses[0]
+    return Tensor.stack(batch_losses).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +328,7 @@ class CenterlineDiceLoss:
       dice_loss = 1.0 - (2.0 * inter + self.smooth) / (denom + self.smooth)
       batch_losses.append(dice_loss)
 
-    return Tensor.stack(*batch_losses).mean() if len(batch_losses) > 1 else batch_losses[0]
+    return Tensor.stack(batch_losses).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -364,11 +364,13 @@ class TopologicalLoss:
     self.cl_dice_loss  = CenterlineDiceLoss(**(cl_dice_kwargs  or {}))
 
   def __call__(self, pred: "Tensor", gt: "Tensor") -> "Tensor":
-    total = Tensor(np.array([0.0], dtype=np.float32))
+    terms: list[Tensor] = []
     if self.w_betti > 0.0:
-      total = total + self.betti_loss(pred, gt)    * self.w_betti
+      terms.append(self.betti_loss(pred, gt)    * self.w_betti)
     if self.w_skeleton > 0.0:
-      total = total + self.skeleton_loss(pred, gt) * self.w_skeleton
+      terms.append(self.skeleton_loss(pred, gt) * self.w_skeleton)
     if self.w_cl_dice > 0.0:
-      total = total + self.cl_dice_loss(pred, gt)  * self.w_cl_dice
-    return total
+      terms.append(self.cl_dice_loss(pred, gt)  * self.w_cl_dice)
+    if not terms:
+      return Tensor(np.array(0.0, dtype=np.float32))
+    return Tensor.stack(terms).sum()
