@@ -1,48 +1,38 @@
-# Prerequisites
-*.d
-
-# Object files
+# Build
+build*/
+cmake-build-*/
 *.o
-*.ko
-*.obj
-*.elf
-
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
 *.so
 *.so.*
 *.dylib
-
-# Executables
+*.a
+*.la
+*.lo
+*.lib
+*.dll
 *.exe
 *.out
 *.app
+
+# Linker / debug artifacts
+*.ilk
+*.map
+*.exp
+*.ko
+*.obj
+*.elf
 *.i*86
 *.x86_64
 *.hex
-
-# Debug files
 *.dSYM/
 *.su
 *.idb
 *.pdb
+*.dwo
+*.gch
+*.pch
 
-# Kernel Module Compile Results
+# Kernel module build artifacts
 *.mod*
 *.cmd
 .tmp_versions/
@@ -51,5 +41,66 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
-*.dwo
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+
+# Compiled shaders
+*.spv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+*.whl
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cache/
+
+# ccache
+.ccache/
+
+# Coverage
+*.gcno
+*.gcda
+*.gcov
+coverage/
+htmlcov/
+
+# Sanitizer logs
+*.asan.log
+*.tsan.log
+*.ubsan.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/
+*.tmp
+
+# Profiling
+*.prof
+perf.data
+perf.data.old
+
+# Prerequisites
+*.d
+
+# Generated
+src/core/version_gen.h

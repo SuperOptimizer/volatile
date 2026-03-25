@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "volatile"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+ml = ["tinygrad"]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["volatile"]
+package-dir = {"" = "."}
+
+[tool.pytest.ini_options]
+testpaths = ["../test/py"]
+timeout = 10

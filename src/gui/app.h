@@ -1,0 +1,56 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+// ---------------------------------------------------------------------------
+// Forward declarations — callers need not include SDL3 or Nuklear headers
+// directly unless they want to call nk_* functions.
+// ---------------------------------------------------------------------------
+struct nk_context;
+
+// ---------------------------------------------------------------------------
+// Configuration passed to app_init
+// ---------------------------------------------------------------------------
+typedef struct {
+  const char *title;       // window title (defaults to "Volatile" if NULL)
+  int         width;       // initial window width  (default 1280)
+  int         height;      // initial window height (default 720)
+} app_config_t;
+
+// ---------------------------------------------------------------------------
+// Opaque application state
+// ---------------------------------------------------------------------------
+typedef struct app_state app_state_t;
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+// Create window, SDL renderer, and Nuklear context.
+// Returns NULL on failure (logs reason via LOG_ERROR).
+app_state_t *app_init(const app_config_t *cfg);
+
+// Tear down Nuklear, renderer, window, and SDL subsystems.
+void app_shutdown(app_state_t *s);
+
+// ---------------------------------------------------------------------------
+// Per-frame API — call in this order each iteration:
+//   app_begin_frame → build nk panels → app_end_frame
+// ---------------------------------------------------------------------------
+
+// Returns true while the window has not been closed/quit.
+bool app_should_close(const app_state_t *s);
+
+// Pump SDL events and start a Nuklear frame. Returns false on fatal error.
+bool app_begin_frame(app_state_t *s);
+
+// Render and present; clears the Nuklear command queue.
+void app_end_frame(app_state_t *s);
+
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
+
+// Return the live Nuklear context so callers can build panels.
+struct nk_context *app_nk_ctx(app_state_t *s);

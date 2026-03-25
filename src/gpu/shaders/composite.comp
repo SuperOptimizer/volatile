@@ -1,0 +1,66 @@
+#version 450
+
+// ---------------------------------------------------------------------------
+// composite.comp — MIP (Maximum Intensity Projection) volume compositing
+//
+// For each output pixel, casts a ray through the 3D volume along the view
+// direction and records the maximum voxel value encountered (MIP).
+// Result is written as RGBA8 to the output storage image.
+// ---------------------------------------------------------------------------
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Output storage image (RGBA8, set=0, binding=0)
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2D out_image;
+
+// 3D volume texture (set=0, binding=1); normalized [0,1] float values
+layout(set = 0, binding = 1) uniform sampler3D volume;
+
+// Camera and ray-march parameters passed as push constants.
+// Ray origin and direction are in volume texture space [0,1]^3.
+layout(push_constant) uniform PushConstants {
+  vec3  ray_origin;       // world-space camera position mapped to [0,1]^3
+  float step_size;        // ray-march step size in texture space (e.g. 0.002)
+  vec3  ray_dir_x;        // right vector in texture space (per-pixel ray delta X)
+  float num_steps;        // maximum steps per ray (float for easy indexing)
+  vec3  ray_dir_y;        // up vector in texture space (per-pixel ray delta Y)
+  float _pad0;
+  vec3  ray_forward;      // primary ray direction (unit vector in texture space)
+  float _pad1;
+  vec2  inv_viewport;     // 1.0 / vec2(image_width, image_height)
+  float window;           // intensity window for output mapping
+  float level;            // intensity level  for output mapping
+} pc;
+
+void main() {
+  ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 img_size = imageSize(out_image);
+
+  if (pixel.x >= img_size.x || pixel.y >= img_size.y) return;
+
+  // Normalized device coordinates [-1, 1]
+  vec2 ndc = (vec2(pixel) + 0.5) * pc.inv_viewport * 2.0 - 1.0;
+
+  // Construct ray direction for this pixel
+  vec3 ray_dir = normalize(pc.ray_forward + ndc.x * pc.ray_dir_x + ndc.y * pc.ray_dir_y);
+
+  // Ray-march: accumulate maximum intensity (MIP)
+  float max_val = 0.0;
+  vec3  pos     = pc.ray_origin;
+  int   steps   = int(pc.num_steps);
+
+  for (int i = 0; i < steps; i++) {
+    // Only sample inside the unit cube [0,1]^3
+    if (all(greaterThanEqual(pos, vec3(0.0))) && all(lessThanEqual(pos, vec3(1.0)))) {
+      float val = texture(volume, pos).r;
+      max_val = max(max_val, val);
+    }
+    pos += ray_dir * pc.step_size;
+  }
+
+  // Apply window/level mapping: map [level-window/2, level+window/2] -> [0,1]
+  float half_win  = pc.window * 0.5;
+  float mapped    = clamp((max_val - (pc.level - half_win)) / pc.window, 0.0, 1.0);
+
+  imageStore(out_image, pixel, vec4(mapped, mapped, mapped, 1.0));
+}

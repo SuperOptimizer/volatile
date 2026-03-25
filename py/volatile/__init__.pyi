@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+__version__: str
+
+def log_set_level(level: int) -> None: ...
+def log_get_level() -> int: ...

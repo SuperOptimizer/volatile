@@ -1,0 +1,111 @@
+#version 450
+
+// ---------------------------------------------------------------------------
+// window_level.comp — Window/level contrast adjustment with colormap
+//
+// Reads a buffer of raw float intensity values (e.g. from resample.comp),
+// applies window/level mapping, looks up a colormap, and writes RGBA8 output.
+//
+// Window/level: remaps [level - window/2, level + window/2] linearly to [0,1].
+// Values outside the window clamp to black/white.
+//
+// Colormaps (colormap_id):
+//   0 = grayscale
+//   1 = hot  (black->red->yellow->white)
+//   2 = cool (cyan->magenta)
+//   3 = viridis (approximate piecewise linear)
+// ---------------------------------------------------------------------------
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Input: raw float intensities
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+  float data[];
+} in_buf;
+
+// Output: RGBA8 packed as uint (R in LSB)
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+  uint data[];
+} out_buf;
+
+layout(push_constant) uniform PushConstants {
+  float window;       // intensity window width
+  float level;        // intensity level (centre)
+  uint  colormap_id;  // which colormap to apply
+  uint  num_pixels;   // total elements to process
+} pc;
+
+// ---------------------------------------------------------------------------
+// Colormap functions — all take t in [0,1], return RGB in [0,1]
+// ---------------------------------------------------------------------------
+
+vec3 cmap_grayscale(float t) {
+  return vec3(t);
+}
+
+vec3 cmap_hot(float t) {
+  // black -> red (0-0.33) -> yellow (0.33-0.66) -> white (0.66-1)
+  float r = clamp(t * 3.0,       0.0, 1.0);
+  float g = clamp(t * 3.0 - 1.0, 0.0, 1.0);
+  float b = clamp(t * 3.0 - 2.0, 0.0, 1.0);
+  return vec3(r, g, b);
+}
+
+vec3 cmap_cool(float t) {
+  // cyan (t=0) to magenta (t=1)
+  return vec3(t, 1.0 - t, 1.0);
+}
+
+vec3 cmap_viridis(float t) {
+  // Piecewise linear approximation of the viridis colormap
+  // Control points sampled at t = 0, 0.25, 0.5, 0.75, 1.0
+  const vec3 c0 = vec3(0.267, 0.005, 0.329);
+  const vec3 c1 = vec3(0.190, 0.407, 0.574);
+  const vec3 c2 = vec3(0.128, 0.566, 0.551);
+  const vec3 c3 = vec3(0.369, 0.718, 0.389);
+  const vec3 c4 = vec3(0.993, 0.906, 0.144);
+
+  float s  = t * 4.0;
+  int   lo = int(s);
+  float f  = s - float(lo);
+
+  // clamp segment index
+  lo = clamp(lo, 0, 3);
+
+  vec3 a, b;
+  if      (lo == 0) { a = c0; b = c1; }
+  else if (lo == 1) { a = c1; b = c2; }
+  else if (lo == 2) { a = c2; b = c3; }
+  else              { a = c3; b = c4; }
+
+  return mix(a, b, f);
+}
+
+// Pack a vec3 RGB + full alpha into a uint RGBA8 (R in LSB, A in MSB)
+uint pack_rgba8(vec3 rgb) {
+  uint r = uint(clamp(rgb.r, 0.0, 1.0) * 255.0 + 0.5);
+  uint g = uint(clamp(rgb.g, 0.0, 1.0) * 255.0 + 0.5);
+  uint b = uint(clamp(rgb.b, 0.0, 1.0) * 255.0 + 0.5);
+  return r | (g << 8) | (b << 16) | (0xFFu << 24);
+}
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+  if (idx >= pc.num_pixels) return;
+
+  float raw = in_buf.data[idx];
+
+  // Window/level: [level - window/2, level + window/2] -> [0,1]
+  float t = clamp((raw - (pc.level - pc.window * 0.5)) / pc.window, 0.0, 1.0);
+
+  vec3 rgb;
+  switch (pc.colormap_id) {
+    case 1:  rgb = cmap_hot(t);      break;
+    case 2:  rgb = cmap_cool(t);     break;
+    case 3:  rgb = cmap_viridis(t);  break;
+    default: rgb = cmap_grayscale(t); break;
+  }
+
+  out_buf.data[idx] = pack_rgba8(rgb);
+}

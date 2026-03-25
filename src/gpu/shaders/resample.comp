@@ -1,0 +1,50 @@
+#version 450
+
+// ---------------------------------------------------------------------------
+// resample.comp — Trilinear volume resampling at arbitrary coordinates
+//
+// Reads a buffer of 3D texture-space coordinates (vec3, packed as float[3])
+// and samples the 3D volume at each using the hardware trilinear filter.
+// Outputs one float per coordinate into the results buffer.
+//
+// Used for tiled rendering: a tile dispatcher fills coords_buf with the
+// texture-space position of each tile sample point.
+// ---------------------------------------------------------------------------
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// 3D volume (set=0, binding=0)
+layout(set = 0, binding = 0) uniform sampler3D volume;
+
+// Input: packed xyz coordinates — 3 floats per sample, stride = 12 bytes.
+// Total elements = num_samples * 3.
+layout(set = 0, binding = 1) readonly buffer CoordBuffer {
+  float data[];
+} coords_buf;
+
+// Output: one float per sample.
+layout(set = 0, binding = 2) writeonly buffer ResultBuffer {
+  float data[];
+} result_buf;
+
+layout(push_constant) uniform PushConstants {
+  uint num_samples;   // total number of coordinate triples
+} pc;
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+  if (idx >= pc.num_samples) return;
+
+  // Unpack coordinate triple
+  vec3 uvw = vec3(
+    coords_buf.data[idx * 3 + 0],
+    coords_buf.data[idx * 3 + 1],
+    coords_buf.data[idx * 3 + 2]
+  );
+
+  // Hardware trilinear interpolation (LINEAR filter on sampler)
+  float val = texture(volume, uvw).r;
+
+  result_buf.data[idx] = val;
+}
