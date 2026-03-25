@@ -39,3 +39,10 @@ const char *s3_browser_get_url(const s3_browser *b);
 void s3_browser_set_bucket(s3_browser *b, const char *bucket);
 void s3_browser_navigate(s3_browser *b, const char *prefix);
 void s3_browser_go_up(s3_browser *b);
+
+// Bookmarks — saved bucket+prefix paths shown in sidebar.
+// url should be s3://bucket/prefix/ form.
+void s3_browser_add_bookmark(s3_browser *b, const char *name, const char *url);
+
+// Recent — recently opened S3 URLs shown at the top of the listing.
+void s3_browser_add_recent(s3_browser *b, const char *url);

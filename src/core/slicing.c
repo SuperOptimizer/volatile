@@ -5,9 +5,9 @@
 
 void slice_volume_plane(const volume *vol, const plane_surface *plane,
                         float *out, int width, int height, float scale) {
-  REQUIRE(vol && plane && out && width > 0 && height > 0,
+  REQUIRE(plane && out && width > 0 && height > 0,
           "slice_volume_plane: invalid args");
-
+  // vol == NULL is allowed: vol_sample returns 0.0 for NULL vol
   float hw = (float)(width  - 1) * 0.5f;
   float hh = (float)(height - 1) * 0.5f;
 
@@ -23,8 +23,9 @@ void slice_volume_plane(const volume *vol, const plane_surface *plane,
 
 void slice_volume_quad(const volume *vol, const quad_surface *surf,
                        float *out, int rows, int cols) {
-  REQUIRE(vol && surf && out && rows > 0 && cols > 0,
+  REQUIRE(surf && out && rows > 0 && cols > 0,
           "slice_volume_quad: invalid args");
+  // vol == NULL is allowed: vol_sample returns 0.0 for NULL vol
 
   int use_rows = rows < surf->rows ? rows : surf->rows;
   int use_cols = cols < surf->cols ? cols : surf->cols;

@@ -142,9 +142,12 @@ int surface_index_nearest(const surface_index *idx, vec3f query, float *out_dist
     int x0 = cx-radius_cells, x1 = cx+radius_cells;
     int y0 = cy-radius_cells, y1 = cy+radius_cells;
     int z0 = cz-radius_cells, z1 = cz+radius_cells;
-    if (x0 < 0) x0 = 0; if (x1 >= idx->gx) x1 = idx->gx-1;
-    if (y0 < 0) y0 = 0; if (y1 >= idx->gy) y1 = idx->gy-1;
-    if (z0 < 0) z0 = 0; if (z1 >= idx->gz) z1 = idx->gz-1;
+    if (x0 < 0)           x0 = 0;
+    if (x1 >= idx->gx)   x1 = idx->gx-1;
+    if (y0 < 0)           y0 = 0;
+    if (y1 >= idx->gy)   y1 = idx->gy-1;
+    if (z0 < 0)           z0 = 0;
+    if (z1 >= idx->gz)   z1 = idx->gz-1;
 
     for (int iz = z0; iz <= z1; iz++)
       for (int iy = y0; iy <= y1; iy++)

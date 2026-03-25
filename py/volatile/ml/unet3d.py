@@ -173,8 +173,7 @@ class UNet3D:
     for enc_blk in self.enc:
       x = enc_blk(x)
       skips.append(x)
-      x = x.max_pool2d(kernel_size=(2,2,2))    # 3-D max pool via max_pool2d won't work;
-      # tinygrad max_pool2d is 2-D only — use average/max pool via reshape trick:
+      # 3-D max pool ×2: reshape then reduce — tinygrad max_pool2d is 2-D only
       B, C, D, H, W = x.shape
       x = x.reshape(B, C, D//2, 2, H//2, 2, W//2, 2)
       x = x.max(axis=(3, 5, 7))               # (B, C, D//2, H//2, W//2)
