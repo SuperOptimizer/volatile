@@ -76,11 +76,11 @@ static bench_result bench_blosc(const uint8_t *src, size_t n,
 
   double t0 = now_ms();
   int csize = blosc1_compress(clevel, BLOSC_SHUFFLE, sizeof(uint8_t),
-                              src, (int32_t)n, dst, (int32_t)dst_size);
+                              n, src, dst, dst_size);
   double encode_ms = now_ms() - t0;
 
   double t1 = now_ms();
-  blosc1_decompress(dst, dec, (int32_t)n);
+  blosc1_decompress(dst, dec, n);
   double decode_ms = now_ms() - t1;
 
   bench_result r = {
@@ -172,7 +172,7 @@ static pyramid_result bench_pyramid(int base_side, int nlevels) {
     blosc1_set_compressor("zstd");
     double t1 = now_ms();
     int csize = blosc1_compress(1, BLOSC_SHUFFLE, sizeof(float),
-                                prev, (int32_t)nbytes, dst, (int32_t)dst_size);
+                                nbytes, prev, dst, dst_size);
     pr.blosc_encode_ms += now_ms() - t1;
     if (csize > 0) pr.blosc_total += (size_t)csize;
     free(dst);

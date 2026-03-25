@@ -23,6 +23,7 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   console.c
   plugin.c
   crosshair.c
+  slice_controller.c
   layout.c
   approval_mask.c
   drawing.c
@@ -30,6 +31,7 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   vol_selector.c
   window_range.c
   toolbar.c
+  tool_runner.c
 )
 
 target_include_directories(volatile_gui PUBLIC

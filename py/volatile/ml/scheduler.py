@@ -237,8 +237,10 @@ class OneCycleLR(_Scheduler):
   def get_lr(self, step: int) -> float:
     step = min(step, self.total_steps - 1)
     if step <= self._warmup_steps:
+      # Warmup: ramp from initial_lr → peak_lr as step 0→warmup_steps
       frac = step / max(1, self._warmup_steps)
-      return self._anneal(self._initial_lr, self.peak_lr, 1.0 - frac)
+      return self._anneal(self._initial_lr, self.peak_lr, frac)
+    # Annealing: decay from peak_lr → eta_min
     frac = (step - self._warmup_steps) / max(1, self.total_steps - self._warmup_steps)
     return self._anneal(self.peak_lr, self.eta_min, frac)
 

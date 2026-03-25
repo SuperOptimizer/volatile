@@ -21,17 +21,18 @@
 #define MAGIC_LEN 4
 #define HEADER_LEN (MAGIC_LEN + 4 + 4)  // 12 bytes
 
+// quality in (0,1]: 1.0 = finest (scale=0.01), near 0 = coarsest (scale=1.0)
+// scale controls quantisation step in compress4d_encode_residual.
 static float default_scale(const json_value *config) {
-  if (!config) return 1.0f;
-  const json_value *q = json_object_get(config, "quality");
-  if (!q) return 1.0f;
-  double v = json_get_number(q, 1.0);
-  // quality in [0,1]: quality==1 → fine-grain (small scale), quality→0 → coarser
-  // scale = 1/quality clamped to [0.01, 100]
-  if (v <= 0.0) v = 1.0;
-  float s = (float)(1.0 / v);
-  if (s < 0.01f) s = 0.01f;
-  if (s > 100.0f) s = 100.0f;
+  double quality = 1.0;
+  if (config) {
+    const json_value *q = json_object_get(config, "quality");
+    if (q) quality = json_get_number(q, 1.0);
+  }
+  if (quality <= 0.0) quality = 1.0;
+  if (quality > 1.0)  quality = 1.0;
+  // linear: quality=1 → 0.01, quality=0 → 1.0
+  float s = (float)(0.01 + (1.0 - quality) * 0.99);
   return s;
 }
 

@@ -15,8 +15,10 @@ add_library(volatile_core STATIC
   vol_mirror.c
   cache.c
   compress4d.c
+  compress4d_zarr.c
   profile.c
   sparse.c
+  project.c
 )
 
 target_include_directories(volatile_core PUBLIC

@@ -687,6 +687,81 @@ void cache_prefetch(chunk_cache *c, chunk_key key) {
 }
 
 // ---------------------------------------------------------------------------
+// Level-granular eviction (compress4d pyramid support)
+// ---------------------------------------------------------------------------
+
+// Evict all hot+warm entries at a specific pyramid level.
+// Pinned entries are skipped (coarsest level is pinned by convention).
+void cache_evict_level(chunk_cache *c, int level) {
+  REQUIRE(c, "cache_evict_level: null cache");
+  pthread_mutex_lock(&c->mu);
+  for (size_t i = 0; i < c->hot.cap; i++) {
+    hot_entry *e = &c->hot.entries[i];
+    if (!e->occupied || e->pinned || e->key.level != level) continue;
+    c->hot.bytes -= e->data.size;
+    c->hot.count--;
+    free(e->data.data);
+    *e = (hot_entry){0};
+  }
+  for (size_t i = 0; i < c->warm.cap; i++) {
+    warm_entry *e = &c->warm.entries[i];
+    if (!e->occupied || e->key.level != level) continue;
+    c->warm.bytes -= e->compressed_size;
+    c->warm.count--;
+    free(e->compressed);
+    *e = (warm_entry){0};
+  }
+  pthread_mutex_unlock(&c->mu);
+}
+
+// Evict finest levels first (level 0 = 1x is finest, level 4 = 32x is coarsest).
+// Stops once at least target_free_bytes of hot-tier memory has been freed.
+void cache_evict_finest_first(chunk_cache *c, size_t target_free_bytes) {
+  REQUIRE(c, "cache_evict_finest_first: null cache");
+  size_t freed = 0;
+  // NOTE: level 0 is full-resolution (biggest), level 4 is 32x downsampled (smallest).
+  // Evict from finest (0) upward; stop early once target met.
+  for (int lvl = 0; lvl <= 4 && freed < target_free_bytes; lvl++) {
+    pthread_mutex_lock(&c->mu);
+    for (size_t i = 0; i < c->hot.cap && freed < target_free_bytes; i++) {
+      hot_entry *e = &c->hot.entries[i];
+      if (!e->occupied || e->pinned || e->key.level != lvl) continue;
+      freed += e->data.size;
+      c->hot.bytes -= e->data.size;
+      c->hot.count--;
+      free(e->data.data);
+      *e = (hot_entry){0};
+    }
+    pthread_mutex_unlock(&c->mu);
+  }
+}
+
+// Evict (finest first) until hot tier is under budget_bytes.
+void cache_evict_to_budget(chunk_cache *c, size_t budget_bytes) {
+  REQUIRE(c, "cache_evict_to_budget: null cache");
+  size_t current = cache_hot_bytes(c);
+  if (current <= budget_bytes) return;
+  cache_evict_finest_first(c, current - budget_bytes);
+}
+
+// Return bytes used by chunks at a specific level across hot+warm tiers.
+size_t cache_level_bytes(const chunk_cache *c, int level) {
+  REQUIRE(c, "cache_level_bytes: null cache");
+  pthread_mutex_lock((pthread_mutex_t *)&c->mu);
+  size_t total = 0;
+  for (size_t i = 0; i < c->hot.cap; i++) {
+    const hot_entry *e = &c->hot.entries[i];
+    if (e->occupied && e->key.level == level) total += e->data.size;
+  }
+  for (size_t i = 0; i < c->warm.cap; i++) {
+    const warm_entry *e = &c->warm.entries[i];
+    if (e->occupied && e->key.level == level) total += e->compressed_size;
+  }
+  pthread_mutex_unlock((pthread_mutex_t *)&c->mu);
+  return total;
+}
+
+// ---------------------------------------------------------------------------
 // Stats
 // ---------------------------------------------------------------------------
 

@@ -334,6 +334,88 @@ TEST test_eviction_mru_survives(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Level-granular eviction tests
+// ---------------------------------------------------------------------------
+
+// Fill cache with chunks at levels 0-4, evict level 0, verify only level 0 gone.
+TEST test_evict_level(void) {
+  cache_config cfg = small_cfg();
+  cfg.hot_max_bytes = 1024 * 1024;   // large enough not to auto-evict
+  chunk_cache *c = cache_new(cfg);
+
+  for (int lvl = 0; lvl <= 4; lvl++) {
+    chunk_data *d = make_chunk(lvl, 64);
+    cache_put(c, make_key(lvl, 0, 0, 0), d);
+    chunk_data_free(d);
+  }
+
+  // Verify all 5 levels present
+  for (int lvl = 0; lvl <= 4; lvl++) {
+    ASSERT(cache_level_bytes(c, lvl) > 0);
+  }
+
+  // Evict level 0 (finest / full-res)
+  cache_evict_level(c, 0);
+  ASSERT_EQ(0u, cache_level_bytes(c, 0));
+
+  // Coarser levels must survive
+  for (int lvl = 1; lvl <= 4; lvl++) {
+    ASSERT(cache_level_bytes(c, lvl) > 0);
+  }
+
+  cache_free(c);
+  PASS();
+}
+
+// cache_evict_finest_first evicts level 0 before level 1, keeps level 4.
+TEST test_evict_finest_first(void) {
+  cache_config cfg = small_cfg();
+  cfg.hot_max_bytes = 1024 * 1024;
+  chunk_cache *c = cache_new(cfg);
+
+  // 256 bytes each at levels 0..4
+  for (int lvl = 0; lvl <= 4; lvl++) {
+    chunk_data *d = make_chunk(lvl, 256);
+    cache_put(c, make_key(lvl, 0, 0, 0), d);
+    chunk_data_free(d);
+  }
+
+  // Free at least 300 bytes (forces eviction of level 0 at minimum)
+  cache_evict_finest_first(c, 300);
+
+  // Level 0 must be gone; level 4 (coarsest) must survive
+  ASSERT_EQ(0u, cache_level_bytes(c, 0));
+  ASSERT(cache_level_bytes(c, 4) > 0);
+
+  cache_free(c);
+  PASS();
+}
+
+// cache_evict_to_budget brings hot tier under the requested size.
+TEST test_evict_to_budget(void) {
+  cache_config cfg = small_cfg();
+  cfg.hot_max_bytes = 1024 * 1024;
+  chunk_cache *c = cache_new(cfg);
+
+  // Insert 5 × 512 = 2560 bytes across levels 0-4
+  for (int lvl = 0; lvl <= 4; lvl++) {
+    chunk_data *d = make_chunk(lvl, 512);
+    cache_put(c, make_key(lvl, 0, 0, 0), d);
+    chunk_data_free(d);
+  }
+
+  size_t before = cache_hot_bytes(c);
+  ASSERT(before >= 512u);
+
+  // Request at most 1024 bytes in hot
+  cache_evict_to_budget(c, 1024);
+  ASSERT(cache_hot_bytes(c) <= 1024u);
+
+  cache_free(c);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suite + main
 // ---------------------------------------------------------------------------
 
@@ -348,6 +430,9 @@ SUITE(cache_suite) {
   RUN_TEST(test_concurrent_get);
   RUN_TEST(test_prefetch_background_load);
   RUN_TEST(test_eviction_mru_survives);
+  RUN_TEST(test_evict_level);
+  RUN_TEST(test_evict_finest_first);
+  RUN_TEST(test_evict_to_budget);
 }
 
 GREATEST_MAIN_DEFS();

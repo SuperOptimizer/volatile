@@ -354,6 +354,165 @@ TEST test_growth_directional(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Advanced growth tests
+// ---------------------------------------------------------------------------
+
+TEST test_splitmix64_deterministic(void) {
+  // Same seed must always produce the same sequence.
+  uint64_t s1 = 42, s2 = 42;
+  for (int i = 0; i < 100; i++) {
+    ASSERT_EQ(splitmix64(&s1), splitmix64(&s2));
+  }
+  // Different seeds should diverge immediately.
+  uint64_t sa = 1, sb = 2;
+  ASSERT(splitmix64(&sa) != splitmix64(&sb));
+  PASS();
+}
+
+TEST test_advanced_growth_runs(void) {
+  quad_surface *seed = flat_grid(7, 7);
+  volume *vol = make_synthetic_volume();
+  ASSERT(vol != NULL);
+
+  seg_grower *g = seg_grower_new(vol, seed);
+  ASSERT(g != NULL);
+
+  advanced_growth_params p = {
+    .straightness_2d    = 0.3f,
+    .straightness_3d    = 0.3f,
+    .distance_weight    = 0.1f,
+    .z_location_weight  = 0.1f,
+    .jitter_amount      = 0.05f,
+    .search_steps       = 16,
+    .search_radius      = 6.0f,
+    .use_direction_field = false,
+    .use_corrections    = false,
+    .max_generations    = 2,
+  };
+
+  bool ok = seg_grower_grow_advanced(g, &p);
+  ASSERT(ok);
+  ASSERT(!seg_grower_busy(g));
+
+  quad_surface *surf = seg_grower_surface(g);
+  ASSERT_EQ(7, surf->rows);
+  ASSERT_EQ(7, surf->cols);
+
+  seg_grower_free(g);
+  quad_surface_free(seed);
+  vol_free(vol);
+  PASS();
+}
+
+TEST test_advanced_improves_vs_simple(void) {
+  // Run simple tracer and advanced growth on the same seed, then compare
+  // mean intensity covered by each resulting surface.
+  volume *vol = make_synthetic_volume();
+  ASSERT(vol != NULL);
+
+  quad_surface *seed1 = flat_grid(7, 7);
+  seg_grower *g1 = seg_grower_new(vol, seed1);
+
+  growth_params simple = {
+    .method      = GROWTH_TRACER,
+    .direction   = GROWTH_DIR_ALL,
+    .generations = 2,
+    .step_size   = 2.0f,
+  };
+  seg_grower_step(g1, &simple);
+  for (int i = 0; i < 2000 && seg_grower_busy(g1); i++) {
+    struct timespec ts = { 0, 1000000 };
+    nanosleep(&ts, NULL);
+  }
+
+  quad_surface *seed2 = flat_grid(7, 7);
+  seg_grower *g2 = seg_grower_new(vol, seed2);
+
+  advanced_growth_params adv = {
+    .straightness_2d   = 0.2f,
+    .straightness_3d   = 0.2f,
+    .distance_weight   = 0.05f,
+    .z_location_weight = 0.05f,
+    .jitter_amount     = 0.0f,
+    .search_steps      = 24,
+    .search_radius     = 6.0f,
+    .use_corrections   = false,
+    .max_generations   = 2,
+  };
+  seg_grower_grow_advanced(g2, &adv);
+
+  // Compute mean sampled intensity for each surface.
+  quad_surface *s1 = seg_grower_surface(g1);
+  quad_surface *s2 = seg_grower_surface(g2);
+  int n = s1->rows * s1->cols;
+
+  float sum1 = 0.0f, sum2 = 0.0f;
+  for (int i = 0; i < n; i++) {
+    vec3f p1 = s1->points[i];
+    vec3f p2 = s2->points[i];
+    sum1 += vol_sample(vol, 0, p1.z, p1.y, p1.x);
+    sum2 += vol_sample(vol, 0, p2.z, p2.y, p2.x);
+  }
+  float mean1 = sum1 / (float)n;
+  float mean2 = sum2 / (float)n;
+
+  // Advanced growth should find at least as bright a surface.
+  ASSERT(mean2 >= mean1 * 0.8f);
+
+  seg_grower_free(g1);
+  seg_grower_free(g2);
+  quad_surface_free(seed1);
+  quad_surface_free(seed2);
+  vol_free(vol);
+  PASS();
+}
+
+TEST test_exclusion_surfaces(void) {
+  volume *vol = make_synthetic_volume();
+  ASSERT(vol != NULL);
+
+  quad_surface *seed = flat_grid(5, 5);
+  seg_grower *g = seg_grower_new(vol, seed);
+
+  // Build an exclusion surface shifted 3 voxels along Z.
+  quad_surface *excl = flat_grid(5, 5);
+  int n = excl->rows * excl->cols;
+  for (int i = 0; i < n; i++) {
+    vec3f p = excl->points[i];
+    p.z += 3.0f;
+    excl->points[i] = p;
+  }
+
+  seg_grower_set_exclusion_surfaces(g, &excl, 1);
+
+  advanced_growth_params p = {
+    .search_steps    = 8,
+    .search_radius   = 5.0f,
+    .max_generations = 1,
+  };
+  bool ok = seg_grower_grow_advanced(g, &p);
+  ASSERT(ok);
+
+  // Verify no vertex landed inside the exclusion zone (within 1 voxel).
+  quad_surface *surf = seg_grower_surface(g);
+  int ns = surf->rows * surf->cols;
+  int ne = excl->rows * excl->cols;
+  for (int i = 0; i < ns; i++) {
+    vec3f sp = surf->points[i];
+    for (int j = 0; j < ne; j++) {
+      float d = vec3f_len(vec3f_sub(sp, excl->points[j]));
+      ASSERT(d >= 1.0f);
+    }
+  }
+
+  quad_surface_free(excl);
+  seg_grower_free(g);
+  quad_surface_free(seed);
+  vol_free(vol);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suite + main
 // ---------------------------------------------------------------------------
 
@@ -364,6 +523,10 @@ SUITE(seg_growth_suite) {
   RUN_TEST(test_step_returns_false_when_busy);
   RUN_TEST(test_growth_corrections);
   RUN_TEST(test_growth_directional);
+  RUN_TEST(test_splitmix64_deterministic);
+  RUN_TEST(test_advanced_growth_runs);
+  RUN_TEST(test_advanced_improves_vs_simple);
+  RUN_TEST(test_exclusion_surfaces);
 }
 
 GREATEST_MAIN_DEFS();

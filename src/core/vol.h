@@ -26,6 +26,10 @@ typedef struct {
 
 typedef struct volume volume;
 
+// parse .zarray (v2) or zarr.json (v3) JSON strings into zarr_level_meta
+bool zarr_parse_zarray(const char *json_str, zarr_level_meta *out);
+bool zarr_parse_zarr_json(const char *json_str, zarr_level_meta *out);
+
 // open a volume from a local path or remote URL
 // path can be: /path/to/volume.zarr or https://server/volume.zarr
 volume *vol_open(const char *path);

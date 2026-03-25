@@ -222,8 +222,8 @@ int main(int argc, char **argv) {
     // --- Volume selector: load volume on change ---
     if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, WIN_W, WIN_H, panel_flags)) {
       // NOTE: PANEL_VOLUME_BROWSER is hidden by default; show via menu later.
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- Side panel: Segmentation tools (toolbar + volume selector + W/L) ---
     if (panel_begin(ctx, layout, PANEL_SEGMENTATION, WIN_W, WIN_H, panel_flags)) {
@@ -263,21 +263,21 @@ int main(int argc, char **argv) {
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Tools", NK_TEXT_LEFT);
       toolbar_render(tools, ctx);
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- Side panel: Surface tree ---
     if (panel_begin(ctx, layout, PANEL_SURFACE_TREE, WIN_W, WIN_H, panel_flags)) {
       surface_panel_render(surf_panel, ctx, NULL);
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- Console ---
     if (panel_begin(ctx, layout, PANEL_CONSOLE, WIN_W, WIN_H,
                     NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
       log_console_render(g_console, ctx, NULL);
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- Update crosshair overlays ---
     overlay_list_clear(ov_xy);
@@ -290,26 +290,26 @@ int main(int argc, char **argv) {
     // --- XY viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_XY, WIN_W, WIN_H, panel_flags)) {
       render_viewer_panel(ctx, vxy, "XY (axial)");
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- XZ viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, WIN_W, WIN_H, panel_flags)) {
       render_viewer_panel(ctx, vxz, "XZ (coronal)");
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- YZ viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, WIN_W, WIN_H, panel_flags)) {
       render_viewer_panel(ctx, vyz, "YZ (sagittal)");
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- 3D viewer ---
     if (panel_begin(ctx, layout, PANEL_VIEWER_3D, WIN_W, WIN_H, panel_flags)) {
       render_3d_panel(ctx, v3d);
+      nk_end(ctx);
     }
-    nk_end(ctx);
 
     // --- Present frame ---
     app_end_frame(app);

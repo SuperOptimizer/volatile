@@ -329,3 +329,572 @@ bool compress4d_decode_residual(const uint8_t *src, size_t src_len,
   free(quant);
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// Little-endian helpers
+// ---------------------------------------------------------------------------
+
+static void write_u8(uint8_t **p, uint8_t v)   { **p = v; (*p)++; }
+static void write_u16le(uint8_t **p, uint16_t v) {
+  (*p)[0] = (uint8_t)(v);
+  (*p)[1] = (uint8_t)(v >> 8);
+  *p += 2;
+}
+static void write_u32le(uint8_t **p, uint32_t v) {
+  (*p)[0] = (uint8_t)(v);
+  (*p)[1] = (uint8_t)(v >> 8);
+  (*p)[2] = (uint8_t)(v >> 16);
+  (*p)[3] = (uint8_t)(v >> 24);
+  *p += 4;
+}
+static void write_i32le(uint8_t **p, int32_t v)  { write_u32le(p, (uint32_t)v); }
+static void write_u64le(uint8_t **p, uint64_t v) {
+  write_u32le(p, (uint32_t)(v & 0xFFFFFFFFu));
+  write_u32le(p, (uint32_t)(v >> 32));
+}
+static void write_i64le(uint8_t **p, int64_t v)  { write_u64le(p, (uint64_t)v); }
+static void write_f32le(uint8_t **p, float v) {
+  uint32_t bits; memcpy(&bits, &v, 4); write_u32le(p, bits);
+}
+
+static uint8_t  read_u8(const uint8_t **p)  { return *(*p)++; }
+static uint16_t read_u16le(const uint8_t **p) {
+  uint16_t v = (uint16_t)((*p)[0]) | ((uint16_t)((*p)[1]) << 8); *p += 2; return v;
+}
+static uint32_t read_u32le(const uint8_t **p) {
+  uint32_t v = (uint32_t)(*p)[0] | ((uint32_t)(*p)[1]<<8) |
+               ((uint32_t)(*p)[2]<<16) | ((uint32_t)(*p)[3]<<24);
+  *p += 4; return v;
+}
+static int32_t  read_i32le(const uint8_t **p) { return (int32_t)read_u32le(p); }
+static uint64_t read_u64le(const uint8_t **p) {
+  uint64_t lo = read_u32le(p), hi = read_u32le(p); return lo | (hi << 32);
+}
+static int64_t  read_i64le(const uint8_t **p) { return (int64_t)read_u64le(p); }
+static float    read_f32le(const uint8_t **p) {
+  uint32_t bits = read_u32le(p); float v; memcpy(&v, &bits, 4); return v;
+}
+
+// ---------------------------------------------------------------------------
+// Growable byte buffer
+// ---------------------------------------------------------------------------
+
+typedef struct {
+  uint8_t *data;
+  size_t   len;
+  size_t   cap;
+} buf_t;
+
+static bool buf_reserve(buf_t *b, size_t extra) {
+  if (b->len + extra <= b->cap) return true;
+  size_t nc = (b->cap == 0) ? 4096 : b->cap * 2;
+  while (nc < b->len + extra) nc *= 2;
+  uint8_t *nd = realloc(b->data, nc);
+  if (!nd) return false;
+  b->data = nd; b->cap = nc;
+  return true;
+}
+
+static bool buf_write(buf_t *b, const void *src, size_t n) {
+  if (!buf_reserve(b, n)) return false;
+  memcpy(b->data + b->len, src, n);
+  b->len += n;
+  return true;
+}
+
+// Write a single byte placeholder, return its index (for patching).
+static size_t buf_placeholder_u64(buf_t *b) {
+  size_t off = b->len;
+  uint8_t zero[8] = {0};
+  buf_write(b, zero, 8);
+  return off;
+}
+
+static void buf_patch_u64le(buf_t *b, size_t off, uint64_t v) {
+  uint8_t *p = b->data + off;
+  write_u64le(&p, v);
+}
+
+// ---------------------------------------------------------------------------
+// Spatial chunking helpers
+// ---------------------------------------------------------------------------
+
+// Number of chunks along one dimension given volume size and chunk size.
+static int64_t n_chunks_dim(int64_t vol, int64_t cs) {
+  return (vol + cs - 1) / cs;
+}
+
+// Encode a single spatial chunk as residual + ANS.
+// prediction: Lanczos upsampled base (or NULL for coarsest level).
+// vol: full level float data [depth*height*width] (row-major z,y,x).
+// cz,cy,cx: chunk origin. sz,sy,sx: chunk size.
+static bool encode_chunk(const float *vol, const float *prediction,
+                          int64_t D, int64_t H, int64_t W,
+                          int64_t cz, int64_t cy, int64_t cx,
+                          int64_t sz, int64_t sy, int64_t sx,
+                          float scale, buf_t *out) {
+  size_t n = (size_t)(sz * sy * sx);
+  float *residual = malloc(n * sizeof(float));
+  if (!residual) return false;
+
+  size_t k = 0;
+  for (int64_t z = cz; z < cz + sz; z++)
+    for (int64_t y = cy; y < cy + sy; y++)
+      for (int64_t x = cx; x < cx + sx; x++) {
+        float v = vol[((size_t)z * (size_t)H + (size_t)y) * (size_t)W + (size_t)x];
+        float p = prediction
+          ? prediction[((size_t)z * (size_t)H + (size_t)y) * (size_t)W + (size_t)x]
+          : 0.0f;
+        residual[k++] = v - p;
+      }
+
+  size_t enc_len = 0;
+  uint8_t *enc = compress4d_encode_residual(residual, n, scale, &enc_len);
+  free(residual);
+  if (!enc) return false;
+
+  // Write: compressed_size (u64), freq[256] (u16 each) already embedded in enc
+  // (compress4d_encode_residual prepends the freq table), so enc = freqs+data.
+  // We need to split them for the format: freq[256] u16, then data.
+  // Actually: use the raw enc blob directly — store its length then blob.
+  // The decoder knows the freq table is the first 256*2 bytes.
+  size_t patch_off = out->len;
+  uint8_t *pw = out->data + out->len;
+  (void)pw;
+  // reserve space for compressed_size
+  size_t csz_off = buf_placeholder_u64(out);
+  // write the encoded blob (contains freq table + ANS data)
+  if (!buf_write(out, enc, enc_len)) { free(enc); return false; }
+  free(enc);
+  // patch the size
+  buf_patch_u64le(out, csz_off, (uint64_t)enc_len);
+  (void)patch_off;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// compress4d_params_default
+// ---------------------------------------------------------------------------
+
+compress4d_params compress4d_params_default(void) {
+  return (compress4d_params){
+    .num_levels  = 5,
+    .quant_step  = 1.0f / 255.0f,
+    .chunk_shape = {64, 64, 64},
+  };
+}
+
+// ---------------------------------------------------------------------------
+// compress4d_encode_pyramid
+// ---------------------------------------------------------------------------
+
+uint8_t *compress4d_encode_pyramid(const float *const *levels,
+                                    const int64_t (*shapes)[3],
+                                    int num_levels,
+                                    compress4d_params params,
+                                    size_t *out_size) {
+  if (!levels || !shapes || num_levels < 1 || !out_size) return NULL;
+
+  buf_t buf = {0};
+
+  // --- Header ---
+  // magic "C4D\0"
+  buf_write(&buf, C4D_MAGIC, 4);
+  {
+    uint8_t *p = buf.data + buf.len;
+    // version, num_levels
+    if (!buf_reserve(&buf, 2 + 4 + 12)) goto fail;
+    buf.data[buf.len++] = C4D_VERSION;
+    buf.data[buf.len++] = (uint8_t)num_levels;
+    p = buf.data + buf.len;
+    write_f32le(&p, params.quant_step);
+    write_i32le(&p, params.chunk_shape[0]);
+    write_i32le(&p, params.chunk_shape[1]);
+    write_i32le(&p, params.chunk_shape[2]);
+    buf.len = (size_t)(p - buf.data);
+  }
+
+  // --- Levels: coarsest first ---
+  for (int li = num_levels - 1; li >= 0; li--) {
+    int64_t D = shapes[li][0], H = shapes[li][1], W = shapes[li][2];
+
+    // Build prediction (upsampled coarser level) for levels > coarsest.
+    float *prediction = NULL;
+    if (li < num_levels - 1) {
+      int64_t Dc = shapes[li+1][0], Hc = shapes[li+1][1], Wc = shapes[li+1][2];
+      prediction = malloc((size_t)(D * H * W) * sizeof(float));
+      if (!prediction) goto fail;
+      lanczos3_upsample3d(levels[li+1], (size_t)Wc, (size_t)Hc, (size_t)Dc, prediction);
+      // Clamp prediction to volume size (upsample doubles dimensions; may be larger)
+      // lanczos3_upsample3d outputs Dc*2 x Hc*2 x Wc*2 which may be > D,H,W
+      // if shapes[li] < 2*shapes[li+1]. We already allocated D*H*W, so the
+      // prediction ptr is sized correctly. But upsample writes (Dc*2)*(Hc*2)*(Wc*2).
+      // Reallocate to full upsampled size, then trim to (D,H,W) if needed.
+      int64_t Du = Dc*2, Hu = Hc*2, Wu = Wc*2;
+      if (Du != D || Hu != H || Wu != W) {
+        // Re-run into a properly sized buffer
+        float *full = malloc((size_t)(Du * Hu * Wu) * sizeof(float));
+        if (!full) { free(prediction); goto fail; }
+        lanczos3_upsample3d(levels[li+1], (size_t)Wc, (size_t)Hc, (size_t)Dc, full);
+        // Copy crop into prediction (already sized D*H*W)
+        for (int64_t z = 0; z < D; z++)
+          for (int64_t y = 0; y < H; y++)
+            for (int64_t x = 0; x < W; x++)
+              prediction[((size_t)z*(size_t)H+(size_t)y)*(size_t)W+(size_t)x] =
+                full[((size_t)z*(size_t)Hu+(size_t)y)*(size_t)Wu+(size_t)x];
+        free(full);
+      } else {
+        // Re-run directly into prediction
+        lanczos3_upsample3d(levels[li+1], (size_t)Wc, (size_t)Hc, (size_t)Dc, prediction);
+      }
+    }
+
+    // Level block header
+    {
+      uint8_t tmp[1 + 3*8 + 4];
+      uint8_t *p = tmp;
+      write_u8(&p, (uint8_t)li);
+      write_i64le(&p, D);
+      write_i64le(&p, H);
+      write_i64le(&p, W);
+      // num_chunks placeholder — write after we know it
+      int64_t csz = params.chunk_shape[0], csy = params.chunk_shape[1], csx = params.chunk_shape[2];
+      if (csz <= 0) csz = D; if (csy <= 0) csy = H; if (csx <= 0) csx = W;
+      int64_t ncz = n_chunks_dim(D, csz), ncy = n_chunks_dim(H, csy), ncx = n_chunks_dim(W, csx);
+      uint32_t num_chunks = (uint32_t)(ncz * ncy * ncx);
+      write_u32le(&p, num_chunks);
+      buf_write(&buf, tmp, (size_t)(p - tmp));
+
+      // Encode each chunk
+      for (int64_t iz = 0; iz < ncz; iz++) {
+        for (int64_t iy = 0; iy < ncy; iy++) {
+          for (int64_t ix = 0; ix < ncx; ix++) {
+            int64_t oz = iz * csz, oy = iy * csy, ox = ix * csx;
+            int64_t esz = (oz + csz <= D) ? csz : D - oz;
+            int64_t esy = (oy + csy <= H) ? csy : H - oy;
+            int64_t esx = (ox + csx <= W) ? csx : W - ox;
+            if (!encode_chunk(levels[li], prediction, D, H, W,
+                               oz, oy, ox, esz, esy, esx,
+                               params.quant_step, &buf)) {
+              free(prediction);
+              goto fail;
+            }
+          }
+        }
+      }
+    }
+
+    free(prediction);
+  }
+
+  *out_size = buf.len;
+  return buf.data;
+
+fail:
+  free(buf.data);
+  return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Stream parsing helpers
+// ---------------------------------------------------------------------------
+
+// Header size: magic(4) + version(1) + num_levels(1) + quant_step(4) + chunk_shape(12) = 22
+#define C4D_HEADER_SIZE 22
+
+typedef struct {
+  int      level_idx;
+  int64_t  shape[3];
+  uint32_t num_chunks;
+  const uint8_t *chunks_start;  // pointer into the original stream at first chunk
+  size_t   total_bytes;         // total bytes for all chunks in this level
+} level_index_entry;
+
+// Parse the stream header and build a level index table.
+// Returns false on malformed stream.
+// entries must be pre-allocated to num_levels size.
+static bool parse_stream(const uint8_t *stream, size_t stream_len,
+                          int *out_num_levels, float *out_quant_step,
+                          int32_t chunk_shape[3],
+                          level_index_entry *entries, int max_entries) {
+  if (stream_len < C4D_HEADER_SIZE) return false;
+  if (memcmp(stream, C4D_MAGIC, 4) != 0) return false;
+
+  const uint8_t *p = stream + 4;
+  if (read_u8(&p) != C4D_VERSION) return false;
+  int nl = (int)read_u8(&p);
+  if (nl < 1 || nl > max_entries) return false;
+  *out_num_levels = nl;
+  *out_quant_step = read_f32le(&p);
+  chunk_shape[0] = read_i32le(&p);
+  chunk_shape[1] = read_i32le(&p);
+  chunk_shape[2] = read_i32le(&p);
+
+  const uint8_t *end = stream + stream_len;
+  for (int i = 0; i < nl; i++) {
+    if (p + 1 + 3*8 + 4 > end) return false;
+    entries[i].level_idx = (int)read_u8(&p);
+    entries[i].shape[0] = read_i64le(&p);
+    entries[i].shape[1] = read_i64le(&p);
+    entries[i].shape[2] = read_i64le(&p);
+    entries[i].num_chunks = read_u32le(&p);
+    entries[i].chunks_start = p;
+
+    // Skip over all chunk data
+    for (uint32_t c = 0; c < entries[i].num_chunks; c++) {
+      if (p + 8 > end) return false;
+      uint64_t csz = read_u64le(&p);
+      if (p + csz > end) return false;
+      p += csz;
+    }
+    entries[i].total_bytes = (size_t)(p - entries[i].chunks_start);
+  }
+  return true;
+}
+
+// Decode all chunks of a level into a freshly allocated float array.
+// base: optional upsampled prediction of same shape (may be NULL for coarsest).
+static float *decode_level_data(const level_index_entry *e, float *base,
+                                float quant_step,
+                                int32_t cs0, int32_t cs1, int32_t cs2) {
+  int64_t D = e->shape[0], H = e->shape[1], W = e->shape[2];
+  size_t n = (size_t)(D * H * W);
+  float *out = malloc(n * sizeof(float));
+  if (!out) return NULL;
+
+  int32_t csz = cs0 > 0 ? cs0 : (int32_t)D;
+  int32_t csy = cs1 > 0 ? cs1 : (int32_t)H;
+  int32_t csx = cs2 > 0 ? cs2 : (int32_t)W;
+
+  int64_t ncz = n_chunks_dim(D, csz), ncy = n_chunks_dim(H, csy), ncx = n_chunks_dim(W, csx);
+
+  const uint8_t *p = e->chunks_start;
+  const uint8_t *end = p + e->total_bytes;
+
+  for (int64_t iz = 0; iz < ncz; iz++) {
+    for (int64_t iy = 0; iy < ncy; iy++) {
+      for (int64_t ix = 0; ix < ncx; ix++) {
+        if (p + 8 > end) { free(out); return NULL; }
+        uint64_t enc_len = read_u64le(&p);
+        if (p + enc_len > end) { free(out); return NULL; }
+
+        int64_t oz = iz * csz, oy = iy * csy, ox = ix * csx;
+        int64_t esz = (oz + csz <= D) ? csz : D - oz;
+        int64_t esy = (oy + csy <= H) ? csy : H - oy;
+        int64_t esx = (ox + csx <= W) ? csx : W - ox;
+        size_t cn = (size_t)(esz * esy * esx);
+
+        float *residual = malloc(cn * sizeof(float));
+        if (!residual) { free(out); return NULL; }
+        if (!compress4d_decode_residual(p, (size_t)enc_len, cn, quant_step, residual)) {
+          free(residual); free(out); return NULL;
+        }
+        p += enc_len;
+
+        // Add prediction and scatter into output
+        size_t k = 0;
+        for (int64_t z = oz; z < oz + esz; z++)
+          for (int64_t y = oy; y < oy + esy; y++)
+            for (int64_t x = ox; x < ox + esx; x++) {
+              size_t idx = ((size_t)z * (size_t)H + (size_t)y) * (size_t)W + (size_t)x;
+              float pred = base ? base[idx] : 0.0f;
+              out[idx] = residual[k++] + pred;
+            }
+        free(residual);
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// compress4d_decode_level
+// ---------------------------------------------------------------------------
+
+float *compress4d_decode_level(const uint8_t *stream, size_t stream_len,
+                                int target_level, int64_t out_shape[3]) {
+  if (!stream || stream_len == 0) return NULL;
+
+  int nl = 0;
+  float quant_step = 0.0f;
+  int32_t cs[3] = {0};
+  level_index_entry entries[64];
+  if (!parse_stream(stream, stream_len, &nl, &quant_step, cs, entries, 64))
+    return NULL;
+  if (target_level < 0 || target_level >= nl) return NULL;
+
+  // Stream is coarsest-first. entries[0] = coarsest (level_idx = nl-1).
+  // We need to decode from coarsest up to target_level.
+  // Find which stream entry corresponds to each level:
+  //   entries[i].level_idx gives the logical level index.
+
+  // Build a map: logical_level -> stream entry index
+  int entry_for_level[64];
+  for (int i = 0; i < nl; i++) entry_for_level[entries[i].level_idx] = i;
+
+  float *current = NULL;
+
+  // Decode from coarsest (nl-1) down to target_level
+  for (int li = nl - 1; li >= target_level; li--) {
+    int ei = entry_for_level[li];
+    float *base = current; // upsampled from previous (finer) decode? No — base is coarser.
+    // Actually we decode coarsest first, so:
+    //   li = nl-1: no base (coarsest)
+    //   li = nl-2: base = upsample(decode of li=nl-1)
+    //   etc.
+
+    float *next_base = NULL;
+    if (current != NULL) {
+      // Upsample current (which is level li+1) to level li's shape
+      int64_t D = entries[ei].shape[0], H = entries[ei].shape[1], W = entries[ei].shape[2];
+      int prev_ei = entry_for_level[li + 1];
+      int64_t Dc = entries[prev_ei].shape[0], Hc = entries[prev_ei].shape[1], Wc = entries[prev_ei].shape[2];
+      int64_t Du = Dc*2, Hu = Hc*2, Wu = Wc*2;
+
+      if (Du == D && Hu == H && Wu == W) {
+        next_base = malloc((size_t)(D * H * W) * sizeof(float));
+        if (!next_base) { free(current); return NULL; }
+        lanczos3_upsample3d(current, (size_t)Wc, (size_t)Hc, (size_t)Dc, next_base);
+      } else {
+        float *full = malloc((size_t)(Du * Hu * Wu) * sizeof(float));
+        if (!full) { free(current); return NULL; }
+        lanczos3_upsample3d(current, (size_t)Wc, (size_t)Hc, (size_t)Dc, full);
+        next_base = malloc((size_t)(D * H * W) * sizeof(float));
+        if (!next_base) { free(full); free(current); return NULL; }
+        for (int64_t z = 0; z < D; z++)
+          for (int64_t y = 0; y < H; y++)
+            for (int64_t x = 0; x < W; x++)
+              next_base[((size_t)z*(size_t)H+(size_t)y)*(size_t)W+(size_t)x] =
+                full[((size_t)z*(size_t)Hu+(size_t)y)*(size_t)Wu+(size_t)x];
+        free(full);
+      }
+      free(current);
+      base = next_base;
+    }
+
+    current = decode_level_data(&entries[ei], base, quant_step, cs[0], cs[1], cs[2]);
+    free(base);
+    if (!current) return NULL;
+  }
+
+  if (out_shape) {
+    int ei = entry_for_level[target_level];
+    out_shape[0] = entries[ei].shape[0];
+    out_shape[1] = entries[ei].shape[1];
+    out_shape[2] = entries[ei].shape[2];
+  }
+  return current;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming decoder
+// ---------------------------------------------------------------------------
+
+struct compress4d_decoder {
+  const uint8_t   *stream;
+  size_t           stream_len;
+  int              num_levels;
+  float            quant_step;
+  int32_t          cs[3];
+  level_index_entry entries[64];
+  int              next_stream_idx;  // index into entries[] (0 = coarsest)
+  float           *last_decoded;     // last decoded data (to build prediction for next)
+  int              last_level_idx;   // logical level index of last_decoded
+};
+
+compress4d_decoder *compress4d_decoder_new(const uint8_t *stream, size_t len) {
+  if (!stream || len == 0) return NULL;
+  compress4d_decoder *d = calloc(1, sizeof(*d));
+  if (!d) return NULL;
+  d->stream = stream;
+  d->stream_len = len;
+  d->next_stream_idx = 0;
+  d->last_decoded = NULL;
+  d->last_level_idx = -1;
+  if (!parse_stream(stream, len, &d->num_levels, &d->quant_step,
+                    d->cs, d->entries, 64)) {
+    free(d);
+    return NULL;
+  }
+  return d;
+}
+
+bool compress4d_decoder_next(compress4d_decoder *d, float **out_data,
+                              int64_t out_shape[3], int *out_level) {
+  if (!d || d->next_stream_idx >= d->num_levels) return false;
+
+  int ei = d->next_stream_idx;
+  level_index_entry *e = &d->entries[ei];
+  int li = e->level_idx;
+
+  // Build prediction from last decoded level if available
+  float *base = NULL;
+  if (d->last_decoded != NULL) {
+    // last_decoded is level (li+1) (one step coarser); upsample it
+    int prev_ei = -1;
+    for (int i = 0; i < d->num_levels; i++)
+      if (d->entries[i].level_idx == d->last_level_idx) { prev_ei = i; break; }
+
+    if (prev_ei >= 0) {
+      int64_t D = e->shape[0], H = e->shape[1], W = e->shape[2];
+      int64_t Dc = d->entries[prev_ei].shape[0], Hc = d->entries[prev_ei].shape[1], Wc = d->entries[prev_ei].shape[2];
+      int64_t Du = Dc*2, Hu = Hc*2, Wu = Wc*2;
+      if (Du == D && Hu == H && Wu == W) {
+        base = malloc((size_t)(D * H * W) * sizeof(float));
+        if (!base) return false;
+        lanczos3_upsample3d(d->last_decoded, (size_t)Wc, (size_t)Hc, (size_t)Dc, base);
+      } else {
+        float *full = malloc((size_t)(Du * Hu * Wu) * sizeof(float));
+        if (!full) return false;
+        lanczos3_upsample3d(d->last_decoded, (size_t)Wc, (size_t)Hc, (size_t)Dc, full);
+        base = malloc((size_t)(D * H * W) * sizeof(float));
+        if (!base) { free(full); return false; }
+        for (int64_t z = 0; z < D; z++)
+          for (int64_t y = 0; y < H; y++)
+            for (int64_t x = 0; x < W; x++)
+              base[((size_t)z*(size_t)H+(size_t)y)*(size_t)W+(size_t)x] =
+                full[((size_t)z*(size_t)Hu+(size_t)y)*(size_t)Wu+(size_t)x];
+        free(full);
+      }
+    }
+  }
+
+  float *decoded = decode_level_data(e, base, d->quant_step, d->cs[0], d->cs[1], d->cs[2]);
+  free(base);
+  if (!decoded) return false;
+
+  free(d->last_decoded);
+  d->last_decoded = decoded;
+  d->last_level_idx = li;
+  d->next_stream_idx++;
+
+  *out_data = decoded;
+  if (out_shape) {
+    out_shape[0] = e->shape[0];
+    out_shape[1] = e->shape[1];
+    out_shape[2] = e->shape[2];
+  }
+  if (out_level) *out_level = li;
+  return true;
+}
+
+void compress4d_decoder_free(compress4d_decoder *d) {
+  if (!d) return;
+  free(d->last_decoded);
+  free(d);
+}
+
+// ---------------------------------------------------------------------------
+// Zarr v3 codec registration (stub — actual dispatch lives in vol.c)
+// ---------------------------------------------------------------------------
+
+static bool g_c4d_codec_registered = false;
+
+void compress4d_register_zarr_codec(void) {
+  if (g_c4d_codec_registered) return;
+  // In a full implementation this would register a codec_vtable into the
+  // global zarr codec registry in vol.c.  For now we set the flag so callers
+  // can check availability and the codec id COMPRESS4D_ZARR_CODEC_ID can be
+  // embedded in zarr v3 .zarray metadata by vol_create / vol_write_chunk.
+  g_c4d_codec_registered = true;
+}

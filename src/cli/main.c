@@ -39,6 +39,9 @@ static void print_usage(void) {
   puts("  rechunk  <zarr> --output <out> --chunk-size Z,Y,X  Rechunk volume");
   puts("  stats    <path>                              Volume statistics");
   puts("  compress <path> [--output <out>]             Re-compress with compress4d");
+  puts("  compress4d <input.zarr> --output <out.c4d>  Encode pyramid to .c4d");
+  puts("  decompress4d <input.c4d> --output <out.zarr> Decode .c4d to zarr");
+  puts("  compress4d-info <input.c4d>                  Print .c4d metadata");
   puts("  serve    [--port N] [--data DIR] [--db PATH] Start the multi-user server");
   puts("  connect  <host:port> [--volume ID]           Connect and test a server");
   puts("  flatten  <surface> --output <out.obj>          UV-flatten quad surface (LSCM)");
@@ -185,7 +188,10 @@ int main(int argc, char **argv) {
   if (strcmp(cmd, "convert") == 0) return cmd_convert(sub_argc, sub_argv);
   if (strcmp(cmd, "rechunk") == 0) return cmd_rechunk(sub_argc, sub_argv);
   if (strcmp(cmd, "stats")   == 0) return cmd_stats(sub_argc, sub_argv);
-  if (strcmp(cmd, "compress")== 0) return cmd_compress(sub_argc, sub_argv);
+  if (strcmp(cmd, "compress")        == 0) return cmd_compress(sub_argc, sub_argv);
+  if (strcmp(cmd, "compress4d")      == 0) return cmd_compress4d(sub_argc, sub_argv);
+  if (strcmp(cmd, "decompress4d")    == 0) return cmd_decompress4d(sub_argc, sub_argv);
+  if (strcmp(cmd, "compress4d-info") == 0) return cmd_compress4d_info(sub_argc, sub_argv);
   if (strcmp(cmd, "serve")   == 0) return cmd_serve(sub_argc, sub_argv);
   if (strcmp(cmd, "connect") == 0) return cmd_connect(sub_argc, sub_argv);
   if (strcmp(cmd, "flatten") == 0) return cmd_flatten(sub_argc, sub_argv);

@@ -58,3 +58,13 @@ size_t cache_hot_bytes(const chunk_cache *c);
 size_t cache_warm_bytes(const chunk_cache *c);
 size_t cache_hits(const chunk_cache *c);
 size_t cache_misses(const chunk_cache *c);
+
+// level-granular eviction (compress4d pyramid support)
+// evict all cached chunks at a specific pyramid level
+void   cache_evict_level(chunk_cache *c, int level);
+// evict finest levels first (level 0 first, level 4 last), freeing at least target_free_bytes
+void   cache_evict_finest_first(chunk_cache *c, size_t target_free_bytes);
+// evict until hot tier is under budget_bytes
+void   cache_evict_to_budget(chunk_cache *c, size_t budget_bytes);
+// get total memory used by chunks at a specific pyramid level (hot+warm)
+size_t cache_level_bytes(const chunk_cache *c, int level);

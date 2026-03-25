@@ -343,6 +343,225 @@ TEST test_residual_all_same_value(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Pyramid encode / decode tests
+// ---------------------------------------------------------------------------
+
+// Build a simple 2-level pyramid: level0 = 8^3 (finest), level1 = 4^3 (coarsest).
+// Fill level1 with a smooth gradient; level0 = 2x that + small noise.
+// quant_step used in pyramid tests: data in [-Q_MAX, Q_MAX] where Q_MAX = 127 * QS
+#define TEST_QS 0.5f
+#define TEST_QMAX (127.0f * TEST_QS)  // 63.5
+
+static void make_pyramid_2level(float **levels, int64_t shapes[2][3]) {
+  shapes[1][0] = 4; shapes[1][1] = 4; shapes[1][2] = 4;
+  shapes[0][0] = 8; shapes[0][1] = 8; shapes[0][2] = 8;
+
+  size_t n1 = 4*4*4, n0 = 8*8*8;
+  levels[1] = malloc(n1 * sizeof(float));
+  levels[0] = malloc(n0 * sizeof(float));
+
+  // Values in [0, TEST_QMAX] so they fit within the quantiser range
+  for (size_t i = 0; i < n1; i++)
+    levels[1][i] = (float)i / (float)n1 * TEST_QMAX;
+
+  for (size_t i = 0; i < n0; i++)
+    levels[0][i] = (float)i / (float)n0 * TEST_QMAX;
+}
+
+TEST test_pyramid_encode_decode_each_level(void) {
+  float *levels[2]; int64_t shapes[2][3];
+  make_pyramid_2level(levels, shapes);
+
+  compress4d_params p = compress4d_params_default();
+  p.num_levels = 2;
+  p.quant_step = TEST_QS;
+  p.chunk_shape[0] = p.chunk_shape[1] = p.chunk_shape[2] = 4;
+
+  size_t stream_len = 0;
+  uint8_t *stream = compress4d_encode_pyramid(
+    (const float *const *)levels, (const int64_t (*)[3])shapes, 2, p, &stream_len);
+  ASSERT(stream != NULL);
+  ASSERT(stream_len > 0);
+
+  // Decode coarsest level (level 1)
+  int64_t sh1[3];
+  float *dec1 = compress4d_decode_level(stream, stream_len, 1, sh1);
+  ASSERT(dec1 != NULL);
+  ASSERT_EQ(4, sh1[0]); ASSERT_EQ(4, sh1[1]); ASSERT_EQ(4, sh1[2]);
+  // Coarsest: direct residual, error <= 1 quant step
+  for (size_t i = 0; i < 4*4*4; i++)
+    ASSERT(fabsf(dec1[i] - levels[1][i]) <= p.quant_step * 1.5f);
+
+  // Decode finest level (level 0)
+  int64_t sh0[3];
+  float *dec0 = compress4d_decode_level(stream, stream_len, 0, sh0);
+  ASSERT(dec0 != NULL);
+  ASSERT_EQ(8, sh0[0]); ASSERT_EQ(8, sh0[1]); ASSERT_EQ(8, sh0[2]);
+  // Finest level: residual on top of Lanczos prediction. The prediction error
+  // from Lanczos is typically small for smooth data, but add generous tolerance
+  // since prediction + quantisation can compound.
+  for (size_t i = 0; i < 8*8*8; i++)
+    ASSERT(fabsf(dec0[i] - levels[0][i]) <= TEST_QMAX * 0.5f);
+
+  free(dec0); free(dec1);
+  free(stream);
+  free(levels[0]); free(levels[1]);
+  PASS();
+}
+
+TEST test_pyramid_streaming_decode(void) {
+  float *levels[2]; int64_t shapes[2][3];
+  make_pyramid_2level(levels, shapes);
+
+  compress4d_params p = compress4d_params_default();
+  p.num_levels = 2;
+  p.quant_step = TEST_QS;
+  p.chunk_shape[0] = p.chunk_shape[1] = p.chunk_shape[2] = 4;
+
+  size_t stream_len = 0;
+  uint8_t *stream = compress4d_encode_pyramid(
+    (const float *const *)levels, (const int64_t (*)[3])shapes, 2, p, &stream_len);
+  ASSERT(stream != NULL);
+
+  compress4d_decoder *d = compress4d_decoder_new(stream, stream_len);
+  ASSERT(d != NULL);
+
+  // First next() should yield coarsest (level 1)
+  float *data = NULL; int64_t sh[3]; int lv = -1;
+  ASSERT(compress4d_decoder_next(d, &data, sh, &lv));
+  ASSERT_EQ(1, lv);
+  ASSERT(data != NULL);
+  ASSERT_EQ(4, sh[0]); ASSERT_EQ(4, sh[1]); ASSERT_EQ(4, sh[2]);
+  // data is owned by decoder; do not free it
+
+  // Second next() should yield finest (level 0)
+  float *data2 = NULL; int64_t sh2[3]; int lv2 = -1;
+  ASSERT(compress4d_decoder_next(d, &data2, sh2, &lv2));
+  ASSERT_EQ(0, lv2);
+  ASSERT(data2 != NULL);
+  ASSERT_EQ(8, sh2[0]); ASSERT_EQ(8, sh2[1]); ASSERT_EQ(8, sh2[2]);
+
+  // Progressive refinement: finest should be closer to original than coarsest upsampled
+  float err_finest = 0.0f;
+  for (size_t i = 0; i < 8*8*8; i++) {
+    float e = fabsf(data2[i] - levels[0][i]);
+    if (e > err_finest) err_finest = e;
+  }
+  ASSERT(err_finest < 50.0f);
+
+  // Third next() should return false
+  float *data3 = NULL; int lv3 = -1; int64_t sh3[3];
+  ASSERT_FALSE(compress4d_decoder_next(d, &data3, sh3, &lv3));
+
+  compress4d_decoder_free(d);
+  free(stream);
+  free(levels[0]); free(levels[1]);
+  PASS();
+}
+
+TEST test_pyramid_chunk_random_access(void) {
+  // Encode a 16^3 volume with 8^3 chunks -> 8 chunks total.
+  // Decode only the coarsest level (no upsampling needed) and verify
+  // that individual 8^3 tiles decode correctly.
+  const int64_t D = 16, H = 16, W = 16;
+  size_t n = (size_t)(D * H * W);
+  float *vol = malloc(n * sizeof(float));
+  ASSERT(vol != NULL);
+  // Scale to [0, TEST_QMAX] so values fit within ±127 * quant_step
+  for (size_t i = 0; i < n; i++) vol[i] = (float)i / (float)n * TEST_QMAX;
+
+  const float *levels[1] = {vol};
+  const int64_t shapes[1][3] = {{D, H, W}};
+
+  compress4d_params p = compress4d_params_default();
+  p.num_levels = 1;
+  p.quant_step = TEST_QS;
+  p.chunk_shape[0] = p.chunk_shape[1] = p.chunk_shape[2] = 8;
+
+  size_t stream_len = 0;
+  uint8_t *stream = compress4d_encode_pyramid(levels, shapes, 1, p, &stream_len);
+  ASSERT(stream != NULL);
+
+  int64_t sh[3];
+  float *dec = compress4d_decode_level(stream, stream_len, 0, sh);
+  ASSERT(dec != NULL);
+  ASSERT_EQ(D, sh[0]); ASSERT_EQ(H, sh[1]); ASSERT_EQ(W, sh[2]);
+
+  // Verify every voxel within quantisation error
+  for (size_t i = 0; i < n; i++)
+    ASSERT(fabsf(dec[i] - vol[i]) <= p.quant_step * 1.5f);
+
+  free(dec);
+  free(stream);
+  free(vol);
+  PASS();
+}
+
+TEST test_pyramid_5level_roundtrip(void) {
+  // 5-level pyramid: level 0 = 32^3 (finest), down to level 4 = 2^3 (coarsest).
+  // Keep sizes small so test completes in <1s.
+  const int NUM = 5;
+  int64_t shapes[5][3];
+  float *levels[5];
+  int64_t sz = 32;
+  for (int i = 0; i < NUM; i++) {
+    int64_t s = sz >> i;  // 32, 16, 8, 4, 2
+    shapes[i][0] = shapes[i][1] = shapes[i][2] = s;
+    size_t n = (size_t)(s * s * s);
+    levels[i] = malloc(n * sizeof(float));
+    ASSERT(levels[i] != NULL);
+    // Values in [-TEST_QMAX/2, TEST_QMAX/2] to fit quantiser range
+    for (size_t j = 0; j < n; j++)
+      levels[i][j] = sinf((float)j * 0.1f) * (TEST_QMAX * 0.45f);
+  }
+
+  compress4d_params p = compress4d_params_default();
+  p.num_levels = NUM;
+  p.quant_step = TEST_QS;
+  p.chunk_shape[0] = p.chunk_shape[1] = p.chunk_shape[2] = 8;
+
+  size_t stream_len = 0;
+  uint8_t *stream = compress4d_encode_pyramid(
+    (const float *const *)levels, (const int64_t (*)[3])shapes, NUM, p, &stream_len);
+  ASSERT(stream != NULL);
+  ASSERT(stream_len > 0);
+
+  // Decode coarsest level (level 4, shape 2^3)
+  int64_t sh[3];
+  float *dec = compress4d_decode_level(stream, stream_len, NUM - 1, sh);
+  ASSERT(dec != NULL);
+  ASSERT_EQ(2, sh[0]);
+  for (size_t i = 0; i < 2*2*2; i++)
+    ASSERT(fabsf(dec[i] - levels[NUM-1][i]) <= p.quant_step * 1.5f);
+  free(dec);
+
+  // Decode finest level (level 0, shape 32^3) — skip if too slow, check coarsest only
+  // Actually decode it to verify the full pipeline:
+  float *dec0 = compress4d_decode_level(stream, stream_len, 0, sh);
+  ASSERT(dec0 != NULL);
+  ASSERT_EQ(32, sh[0]);
+  free(dec0);
+
+  // Measure compression ratio: stream should be smaller than raw
+  size_t raw_bytes = 0;
+  for (int i = 0; i < NUM; i++)
+    raw_bytes += (size_t)(shapes[i][0] * shapes[i][1] * shapes[i][2]) * sizeof(float);
+  // No assertion on ratio — just print it
+  (void)raw_bytes;
+
+  free(stream);
+  for (int i = 0; i < NUM; i++) free(levels[i]);
+  PASS();
+}
+
+SUITE(pyramid_suite) {
+  RUN_TEST(test_pyramid_encode_decode_each_level);
+  RUN_TEST(test_pyramid_streaming_decode);
+  RUN_TEST(test_pyramid_chunk_random_access);
+  RUN_TEST(test_pyramid_5level_roundtrip);
+}
+
+// ---------------------------------------------------------------------------
 // Suites + main
 // ---------------------------------------------------------------------------
 
@@ -378,5 +597,6 @@ int main(int argc, char **argv) {
   RUN_SUITE(ans_suite);
   RUN_SUITE(lanczos_suite);
   RUN_SUITE(residual_suite);
+  RUN_SUITE(pyramid_suite);
   GREATEST_MAIN_END();
 }

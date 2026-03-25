@@ -10,7 +10,8 @@ file(GLOB _test_sources CONFIGURE_DEPENDS test_*.c)
 set(_core_only_tests
   test_log test_hash test_json test_chunk test_thread
   test_math test_geom test_imgproc test_io test_net
-  test_vol test_cache test_compress4d test_vol_mirror
+  test_vol test_cache test_compress4d test_compress4d_zarr test_vol_mirror
+  test_real_data
 )
 
 # core + render
@@ -26,7 +27,7 @@ set(_gpu_tests
 
 # core + server
 set(_server_tests
-  test_db test_protocol test_srv test_review test_gitstore
+  test_db test_protocol test_srv test_review test_gitstore test_versioning test_stream
 )
 
 # core + server + render (collab uses overlay_list)
@@ -38,6 +39,7 @@ set(_server_render_tests
 set(_cli_tests
   test_cli_convert test_cli_grow
   test_metrics test_mask test_inpaint
+  test_compress4d_cli
 )
 
 # core + render + gui  (EXCLUDE_FROM_ALL — only built when volatile_gui is)
@@ -47,7 +49,7 @@ set(_gui_tests
   test_nk_widgets test_console test_plugin_mgr test_surface_panel
   test_neural_trace test_crosshair test_seg_growth test_approval_mask
   test_layout test_drawing test_seeding test_vol_selector test_window_range
-  test_toolbar
+  test_toolbar test_slice_controller
 )
 
 # ---------------------------------------------------------------------------
@@ -67,6 +69,21 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench_compress4d.c")
   )
 endif()
 
+# test_tool_runner: compile tool_runner.c directly — no GUI/SDL deps needed.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_tool_runner.c")
+  add_executable(test_tool_runner
+    test_tool_runner.c
+    ${CMAKE_SOURCE_DIR}/src/gui/tool_runner.c
+  )
+  target_include_directories(test_tool_runner PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${greatest_SOURCE_DIR}
+  )
+  target_link_libraries(test_tool_runner PRIVATE volatile_core)
+  add_test(NAME test_tool_runner COMMAND test_tool_runner)
+  set_tests_properties(test_tool_runner PROPERTIES TIMEOUT 10)
+endif()
+
 # test_sync: compile sync.c directly with an inline mock gitstore (avoids
 # duplicate-symbol clash if gitstore.c is also in volatile_server).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c")
@@ -84,7 +101,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c")
 endif()
 
 # tests handled specially above (not processed by the generic loop)
-set(_special_tests test_sync)
+set(_special_tests test_sync test_tool_runner)
 
 # tests not listed above (e.g. CLI tests) get core only
 foreach(_src IN LISTS _test_sources)
@@ -123,8 +140,11 @@ foreach(_src IN LISTS _test_sources)
 
     add_test(NAME ${_name} COMMAND ${_name})
     # GPU compute tests invoke glslc at runtime; give them more time.
+    # Network integration tests need extra time for real HTTP downloads.
     if(_name STREQUAL "test_gpu_compute")
       set_tests_properties(${_name} PROPERTIES TIMEOUT 60)
+    elseif(_name STREQUAL "test_real_data")
+      set_tests_properties(${_name} PROPERTIES TIMEOUT 120)
     else()
       set_tests_properties(${_name} PROPERTIES TIMEOUT 10)
     endif()

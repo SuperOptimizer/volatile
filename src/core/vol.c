@@ -105,6 +105,10 @@ bool zarr_parse_zarray(const char *json_str, zarr_level_meta *out) {
     out->compressor_shuffle = (int)json_get_int(json_object_get(comp, "shuffle"), 1);
   }
 
+  // "dimension_separator" — "/" means chunk keys use slashes instead of dots
+  const char *dimsep = json_get_str(json_object_get(root, "dimension_separator"));
+  out->chunk_sep = (dimsep && dimsep[0] == '/') ? '/' : '.';
+
   out->zarr_version = 2;
   json_free(root);
   return true;
@@ -352,10 +356,47 @@ volume *vol_open(const char *path) {
         return NULL;
       }
     } else {
-      // http/https remote — not yet implemented
-      LOG_WARN("http/https remote volumes not yet implemented: %s", path);
-      free(v);
-      return NULL;
+      // http/https remote — fetch .zarray metadata for each level via HTTP GET
+      http_init();
+      v->num_levels = 0;
+      for (int lvl = 0; lvl < VOL_MAX_LEVELS; lvl++) {
+        // Try zarr v3 zarr.json first, then v2 .zarray
+        char url_v3[VOL_PATH_MAX], url_v2[VOL_PATH_MAX];
+        snprintf(url_v3, sizeof(url_v3), "%s/%d/zarr.json", path, lvl);
+        snprintf(url_v2, sizeof(url_v2), "%s/%d/.zarray",   path, lvl);
+
+        http_response *resp = http_get(url_v3, 10000);
+        bool fetched_v3 = (resp && resp->status_code == 200 && resp->data);
+        if (!fetched_v3) {
+          http_response_free(resp);
+          resp = http_get(url_v2, 10000);
+        }
+        if (!resp || resp->status_code != 200 || !resp->data) {
+          http_response_free(resp);
+          break;  // no more levels
+        }
+
+        zarr_level_meta meta;
+        bool ok;
+        if (fetched_v3)
+          ok = zarr_parse_zarr_json((const char *)resp->data, &meta);
+        else
+          ok = zarr_parse_zarray((const char *)resp->data, &meta);
+        http_response_free(resp);
+
+        if (!ok) break;
+        v->levels[v->num_levels++] = meta;
+      }
+
+      if (v->num_levels == 0) {
+        LOG_WARN("no valid levels found at remote URL: %s", path);
+        free(v);
+        return NULL;
+      }
+
+      LOG_INFO("opened remote volume %s (%d levels, v%d)", path, v->num_levels,
+               v->levels[0].zarr_version);
+      return v;
     }
   }
 
@@ -416,7 +457,7 @@ static void chunk_path(const volume *v, int level, const int64_t *coords, int nd
       used += snprintf(buf + used, bufsz - (size_t)used, "/%lld", (long long)coords[d]);
   } else {
     for (int d = 0; d < ndim && used < (int)bufsz - 1; d++) {
-      char sep = (d == 0) ? '/' : '.';
+      char sep = (d == 0) ? '/' : m->chunk_sep;
       used += snprintf(buf + used, bufsz - (size_t)used, "%c%lld", sep, (long long)coords[d]);
     }
   }
@@ -581,8 +622,22 @@ uint8_t *vol_read_chunk(const volume *v, int level, const int64_t *chunk_coords,
   if (!m) return NULL;
 
   if (v->source == VOL_REMOTE) {
-    LOG_WARN("remote chunk read not yet implemented");
-    return NULL;
+    // Build the URL for this chunk and fetch it via HTTP
+    char url[VOL_PATH_MAX];
+    chunk_path(v, level, chunk_coords, m->ndim, url, sizeof(url));
+
+    http_response *resp = http_get(url, 30000);
+    if (!resp || resp->status_code != 200 || !resp->data) {
+      http_response_free(resp);
+      return NULL;
+    }
+
+    // Decompress the fetched bytes
+    size_t decomp_size = 0;
+    uint8_t *decomp = decompress_buf(m, resp->data, resp->size, &decomp_size);
+    http_response_free(resp);
+    if (out_size) *out_size = decomp_size;
+    return decomp;
   }
 
   if (m->sharded) {
@@ -630,17 +685,11 @@ uint8_t *vol_read_chunk(const volume *v, int level, const int64_t *chunk_coords,
   uint8_t *raw = read_file_bytes(path, &raw_size);
   if (!raw) return NULL;
 
-  if (m->compressor_id[0] != '\0') {
-    size_t decomp_size = 0;
-    uint8_t *decomp = blosc2_decompress_chunk(raw, raw_size, &decomp_size);
-    free(raw);
-    if (!decomp) return NULL;
-    if (out_size) *out_size = decomp_size;
-    return decomp;
-  }
-
-  if (out_size) *out_size = raw_size;
-  return raw;
+  size_t decomp_size = 0;
+  uint8_t *decomp = decompress_buf(m, raw, raw_size, &decomp_size);
+  free(raw);
+  if (out_size) *out_size = decomp_size;
+  return decomp;
 }
 
 // ---------------------------------------------------------------------------

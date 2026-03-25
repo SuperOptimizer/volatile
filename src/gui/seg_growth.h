@@ -47,3 +47,32 @@ bool          seg_grower_busy(const seg_grower *g);
 
 // add a correction point: UV coordinates + 3D target position
 void          seg_grower_add_correction(seg_grower *g, float u, float v, vec3f target);
+
+// ---------------------------------------------------------------------------
+// Advanced growth — port of villa's GrowSurface algorithm
+// ---------------------------------------------------------------------------
+
+typedef struct {
+  float straightness_2d;    // 2D straightness constraint weight
+  float straightness_3d;    // 3D straightness constraint weight
+  float distance_weight;    // distance preservation weight
+  float z_location_weight;  // Z-axis anchoring weight
+  float jitter_amount;      // deterministic jitter for robustness
+  int   search_steps;       // number of normal-search samples
+  float search_radius;      // search range along normal (voxels)
+  bool  use_direction_field;// guide growth with structure tensor
+  bool  use_corrections;    // honor correction anchor points
+  int   max_generations;    // stop after N generations (0 = unlimited)
+} advanced_growth_params;
+
+// Multi-generation growth with per-vertex cost-function optimization.
+// Blocks until all generations complete; safe to call from any thread.
+bool seg_grower_grow_advanced(seg_grower *g, const advanced_growth_params *params);
+
+// Set exclusion surfaces — new positions within exclusion_radius of any
+// point on these surfaces will be rejected and snapped back.
+void seg_grower_set_exclusion_surfaces(seg_grower *g,
+                                       quad_surface **others, int count);
+
+// Deterministic jitter — SplitMix64 PRNG used by villa for reproducibility.
+uint64_t splitmix64(uint64_t *state);
