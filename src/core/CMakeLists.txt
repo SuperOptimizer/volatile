@@ -23,6 +23,12 @@ add_library(volatile_core STATIC
   umbilicus.c
   slicing.c
   lineseg.c
+  optimizer.c
+  graph_solver.c
+  gridstore.c
+  pointcloud.c
+  diffusion.c
+  binary_pyramid.c
 )
 
 target_include_directories(volatile_core PUBLIC

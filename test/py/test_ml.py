@@ -1302,3 +1302,238 @@ def test_ink_detector_model_type_aliases():
   for mt in ('unet', 'resnet3d', 'timesformer'):
     det = InkDetector(model_type=mt, z_range=4, base_channels=4, num_levels=2)
     assert det.model_type == mt
+
+
+# ---------------------------------------------------------------------------
+# transformers.py — EVA / FlashRoPE / PoPE / Primus / Vesuvius3dViT tests
+# ---------------------------------------------------------------------------
+
+from volatile.ml.transformers import (
+  MultiHeadAttention,
+  FlashRoPEAttention, FlashRoPE,
+  EVABlock,
+  PopeEmbedding, PopeBlock,
+  VisionTransformer,
+  PrimusEncoder, PrimusDecoder,
+  Vesuvius3dViTModel,
+  build_rope_nd_freqs, apply_rope_nd,
+)
+
+
+# ---- RoPE utilities --------------------------------------------------------
+
+def test_build_rope_nd_freqs_2d_shape():
+  freqs = build_rope_nd_freqs((4, 4), head_dim=16)
+  assert freqs.shape == (16, 8, 2)   # 4*4=16 positions, head_dim//2=8 freq pairs, (sin,cos)
+
+
+def test_build_rope_nd_freqs_3d_shape():
+  freqs = build_rope_nd_freqs((2, 4, 4), head_dim=24)
+  assert freqs.shape == (32, 12, 2)  # 2*4*4=32 positions, 24//2=12 freq pairs
+
+
+def test_apply_rope_nd_output_shape():
+  freqs = build_rope_nd_freqs((4, 4), head_dim=16)
+  x = Tensor.randn(2, 4, 16, 16)    # (B, H, N, D)
+  out = apply_rope_nd(x, freqs)
+  assert out.shape == (2, 4, 16, 16)
+
+
+# ---- MultiHeadAttention ----------------------------------------------------
+
+def test_mha_output_shape():
+  mha = MultiHeadAttention(embed_dim=64, num_heads=4)
+  x = Tensor.randn(2, 16, 64)
+  out = mha(x)
+  assert out.shape == (2, 16, 64)
+
+
+def test_mha_with_rope():
+  freqs = build_rope_nd_freqs((4, 4), head_dim=16)  # 16 positions
+  mha = MultiHeadAttention(embed_dim=64, num_heads=4)
+  x = Tensor.randn(2, 16, 64)
+  out = mha(x, rope_freqs=freqs)
+  assert out.shape == (2, 16, 64)
+
+
+# ---- FlashRoPEAttention ----------------------------------------------------
+
+def test_flash_rope_attention_shape():
+  attn = FlashRoPEAttention(dim=64, num_heads=4)
+  x = Tensor.randn(2, 16, 64)
+  out = attn(x)
+  assert out.shape == (2, 16, 64)
+
+
+def test_flash_rope_attention_with_freqs():
+  freqs = build_rope_nd_freqs((4, 4), head_dim=16)
+  attn = FlashRoPEAttention(dim=64, num_heads=4)
+  x = Tensor.randn(2, 16, 64)
+  out = attn(x, rope_freqs=freqs)
+  assert out.shape == (2, 16, 64)
+
+
+def test_flash_rope_embedding_freqs_shape():
+  rope = FlashRoPE(head_dim=16, feat_shape=(4, 4))
+  freqs = rope.get_freqs()
+  assert freqs.shape == (16, 8, 2)
+
+
+# ---- EVABlock ---------------------------------------------------------------
+
+def test_eva_block_output_shape():
+  blk = EVABlock(dim=64, num_heads=4)
+  x = Tensor.randn(2, 16, 64)
+  out = blk(x)
+  assert out.shape == (2, 16, 64)
+
+
+def test_eva_block_with_rope():
+  freqs = build_rope_nd_freqs((4, 4), head_dim=16)
+  blk = EVABlock(dim=64, num_heads=4, init_values=0.1)
+  x = Tensor.randn(2, 16, 64)
+  out = blk(x, rope_freqs=freqs)
+  assert out.shape == (2, 16, 64)
+
+
+def test_eva_block_swiglu_false():
+  blk = EVABlock(dim=64, num_heads=4, swiglu_mlp=False)
+  x = Tensor.randn(2, 16, 64)
+  out = blk(x)
+  assert out.shape == (2, 16, 64)
+
+
+# ---- PopeEmbedding / PopeBlock ----------------------------------------------
+
+def test_pope_embedding_shape():
+  emb = PopeEmbedding(head_dim=16, feat_shape=(4, 4))
+  freqs = emb.get_embed()
+  assert freqs.shape == (16, 8, 2)
+
+
+def test_pope_block_output_shape():
+  blk = PopeBlock(dim=64, num_heads=4)
+  x = Tensor.randn(2, 16, 64)
+  freqs = build_rope_nd_freqs((4, 4), head_dim=16)
+  out = blk(x, rope_freqs=freqs)
+  assert out.shape == (2, 16, 64)
+
+
+def test_pope_block_no_rope():
+  blk = PopeBlock(dim=64, num_heads=4, swiglu_mlp=False)
+  x = Tensor.randn(2, 16, 64)
+  out = blk(x)
+  assert out.shape == (2, 16, 64)
+
+
+# ---- VisionTransformer ------------------------------------------------------
+
+def test_vit_2d_output_shape():
+  vit = VisionTransformer(embed_dim=64, depth=2, num_heads=4, feat_shape=(4, 4))
+  x = Tensor.randn(2, 16, 64)   # 4*4=16 tokens
+  out = vit(x)
+  assert out.shape == (2, 16, 64)
+
+
+def test_vit_3d_output_shape():
+  vit = VisionTransformer(embed_dim=48, depth=2, num_heads=4, feat_shape=(2, 4, 4), swiglu_mlp=False)
+  x = Tensor.randn(2, 32, 48)   # 2*4*4=32 tokens
+  out = vit(x)
+  assert out.shape == (2, 32, 48)
+
+
+def test_vit_pope_type():
+  vit = VisionTransformer(embed_dim=64, depth=2, num_heads=4, feat_shape=(4, 4), pos_emb_type="pope")
+  x = Tensor.randn(1, 16, 64)
+  out = vit(x)
+  assert out.shape == (1, 16, 64)
+
+
+# ---- PrimusEncoder / PrimusDecoder ------------------------------------------
+
+def test_primus_encoder_2d_output_shape():
+  enc = PrimusEncoder(in_channels=1, embed_dim=64, patch_size=8, input_shape=(32, 32),
+                      depth=2, num_heads=4, swiglu_mlp=False)
+  x = Tensor.randn(2, 1, 32, 32)
+  tokens = enc(x)
+  assert tokens.shape == (2, 16, 64)   # (32//8)^2 = 16 tokens
+
+
+def test_primus_encoder_3d_output_shape():
+  enc = PrimusEncoder(in_channels=1, embed_dim=48, patch_size=8, input_shape=(16, 16, 16),
+                      depth=2, num_heads=4, swiglu_mlp=False)
+  x = Tensor.randn(1, 1, 16, 16, 16)
+  tokens = enc(x)
+  assert tokens.shape == (1, 8, 48)    # (16//8)^3 = 8 tokens
+
+
+def test_primus_decoder_2d_output_shape():
+  dec = PrimusDecoder(embed_dim=64, patch_size=8, out_channels=2, input_shape=(32, 32))
+  tokens = Tensor.randn(2, 16, 64)
+  out = dec(tokens)
+  assert out.shape == (2, 2, 32, 32)
+
+
+def test_primus_decoder_3d_output_shape():
+  dec = PrimusDecoder(embed_dim=48, patch_size=8, out_channels=2, input_shape=(16, 16, 16))
+  tokens = Tensor.randn(1, 8, 48)
+  out = dec(tokens)
+  assert out.shape == (1, 2, 16, 16, 16)
+
+
+def test_primus_encoder_decoder_roundtrip_2d():
+  """Encoder → Decoder should produce the correct spatial output shape."""
+  enc = PrimusEncoder(in_channels=1, embed_dim=64, patch_size=8, input_shape=(32, 32),
+                      depth=1, num_heads=4, swiglu_mlp=False)
+  dec = PrimusDecoder(embed_dim=64, patch_size=8, out_channels=2, input_shape=(32, 32))
+  x = Tensor.randn(1, 1, 32, 32)
+  tokens = enc(x)
+  out = dec(tokens)
+  assert out.shape == (1, 2, 32, 32)
+
+
+# ---- Vesuvius3dViTModel -----------------------------------------------------
+
+def test_vesuvius_3d_vit_pooled_output():
+  """Mean-pooled feature vector output."""
+  model = Vesuvius3dViTModel(
+    in_channels=1, patch_size=8, embed_dim=48, depth=2, num_heads=4,
+    input_shape=(16, 16, 16), out_channels=0, return_tokens=False,
+  )
+  x = Tensor.randn(2, 1, 16, 16, 16)
+  out = model(x)
+  assert out.shape == (2, 48), f"got {out.shape}"
+
+
+def test_vesuvius_3d_vit_token_output():
+  """Token-level output."""
+  model = Vesuvius3dViTModel(
+    in_channels=1, patch_size=8, embed_dim=48, depth=2, num_heads=4,
+    input_shape=(16, 16, 16), return_tokens=True,
+  )
+  x = Tensor.randn(1, 1, 16, 16, 16)
+  out = model(x)
+  n_tokens = (16 // 8) ** 3   # = 8
+  assert out.shape == (1, n_tokens, 48), f"got {out.shape}"
+
+
+def test_vesuvius_3d_vit_with_head():
+  """With out_channels > 0 head should project to that dim."""
+  model = Vesuvius3dViTModel(
+    in_channels=1, patch_size=8, embed_dim=48, depth=1, num_heads=4,
+    input_shape=(16, 16, 16), out_channels=4, return_tokens=False,
+  )
+  x = Tensor.randn(2, 1, 16, 16, 16)
+  out = model(x)
+  assert out.shape == (2, 4)
+
+
+def test_vesuvius_3d_vit_pope():
+  """PoPE variant should produce same shapes as RoPE variant."""
+  model = Vesuvius3dViTModel(
+    in_channels=1, patch_size=8, embed_dim=48, depth=2, num_heads=4,
+    input_shape=(16, 16, 16), return_tokens=True, pos_emb_type="pope",
+  )
+  x = Tensor.randn(1, 1, 16, 16, 16)
+  out = model(x)
+  assert out.shape == (1, 8, 48)

@@ -211,6 +211,9 @@ int optimizer_solve(optimizer *o, float *params,
     if (!A) { o->final_cost = F; return -1; }
     memcpy(A, o->JtJ, (size_t)np * np * sizeof(float));
 
+    float *rhs = malloc((size_t)np * sizeof(float));
+    if (!rhs) { free(A); o->final_cost = F; return -1; }
+
     bool step_accepted = false;
     for (int attempt = 0; attempt < 8; attempt++) {
       // Apply damping
@@ -219,7 +222,6 @@ int optimizer_solve(optimizer *o, float *params,
         A[i * np + i] = d + lambda * (d > 0.0f ? d : 1.0f);
       }
       // rhs = -Jtr
-      float *rhs = o->delta;
       for (int i = 0; i < np; i++) rhs[i] = -o->Jtr[i];
 
       if (cholesky_solve(A, rhs, o->delta, np)) {
@@ -244,6 +246,7 @@ int optimizer_solve(optimizer *o, float *params,
       // Restore A from JtJ for next attempt
       memcpy(A, o->JtJ, (size_t)np * np * sizeof(float));
     }
+    free(rhs);
     free(A);
 
     if (!step_accepted) {
