@@ -186,9 +186,12 @@ int surface_index_radius(const surface_index *idx, vec3f query, float radius,
   int cells = (int)(radius / idx->cell_size) + 1;
 
   int x0=cx-cells, x1=cx+cells, y0=cy-cells, y1=cy+cells, z0=cz-cells, z1=cz+cells;
-  if (x0<0) x0=0;  if (x1>=idx->gx) x1=idx->gx-1;
-  if (y0<0) y0=0;  if (y1>=idx->gy) y1=idx->gy-1;
-  if (z0<0) z0=0;  if (z1>=idx->gz) z1=idx->gz-1;
+  if (x0 < 0) x0 = 0;
+  if (x1 >= idx->gx) x1 = idx->gx-1;
+  if (y0 < 0) y0 = 0;
+  if (y1 >= idx->gy) y1 = idx->gy-1;
+  if (z0 < 0) z0 = 0;
+  if (z1 >= idx->gz) z1 = idx->gz-1;
 
   float r2 = radius * radius;
   int count = 0;

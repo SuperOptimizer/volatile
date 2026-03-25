@@ -15,6 +15,7 @@ set(_core_only_tests
   test_umbilicus test_lineseg test_slicing test_graph_solver
   test_tiff_write test_binary_pyramid
   test_diffusion
+  test_abf test_surface_index
 )
 
 # core + render

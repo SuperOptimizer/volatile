@@ -186,7 +186,8 @@ class YoussefMAE:
 
     if ids_keep is not None:
       # gather visible subset — index along dim=1
-      vis = patches[:, ids_keep, :]                       # (B, N_vis, dim)
+      # tinygrad does not support numpy ndarray indexing; convert to Python list
+      vis = patches[:, ids_keep.tolist(), :]              # (B, N_vis, dim)
     else:
       vis = patches
 
@@ -220,7 +221,7 @@ class YoussefMAE:
       # Overwrite rows — tinygrad supports gather-style indexing
       # Simpler: build full via concatenation with known sorted order
       all_ids   = np.concatenate([ids_keep, ids_mask])
-      all_order = np.argsort(all_ids)
+      all_order = np.argsort(all_ids).tolist()
       all_toks  = Tensor.cat(vis, mask_toks, dim=1)    # (B, N, D)
       tokens    = all_toks[:, all_order, :]            # restore original order
 
@@ -251,8 +252,8 @@ class YoussefMAE:
     target = (target - mean) / (var + 1e-6).sqrt()
 
     # Loss only on masked patches
-    mask_pred   = pred[:, ids_mask, :]
-    mask_target = target[:, ids_mask, :]
+    mask_pred   = pred[:, ids_mask.tolist(), :]
+    mask_target = target[:, ids_mask.tolist(), :]
     loss = ((mask_pred - mask_target) ** 2).mean()
 
     recon = self._unpatchify(pred)

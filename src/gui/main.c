@@ -616,8 +616,33 @@ int main(int argc, char **argv) {
     keybinds_dialog_render(keybinds_dlg, ctx);
     file_dialog_render(fdlg_volpkg, ctx);
     file_dialog_render(fdlg_zarr, ctx);
-    file_dialog_render(fdlg_remote, ctx);
-    cred_dialog_render(cred_dlg, ctx);
+    // S3 browser — show cred_dialog first if not authenticated
+    if (s3_browser_is_visible(s3_brow) && !cred_dialog_is_visible(cred_dlg)) {
+      if (s3_browser_render(s3_brow, ctx)) {
+        const char *url = s3_browser_get_url(s3_brow);
+        if (url && url[0] != '\0') {
+          vol_free(vol);
+          vol = vol_open(url);
+          if (vol) {
+            viewer_set_volume(vxy, vol);
+            viewer_set_volume(vxz, vol);
+            viewer_set_volume(vyz, vol);
+            viewer3d_set_volume(v3d, vol);
+            menubar_add_recent(mbar, url);
+            LOG_INFO("Opened remote volume: %s", url);
+          } else {
+            // Auth may have failed — show cred dialog
+            cred_dialog_show(cred_dlg, url);
+            LOG_WARN("Failed to open remote volume: %s", url);
+          }
+        }
+      }
+    }
+    // If cred_dialog submits, push creds into s3_browser
+    if (cred_dialog_render(cred_dlg, ctx)) {
+      s3_credentials *creds = cred_dialog_get_creds(cred_dlg);
+      if (creds) s3_browser_set_creds(s3_brow, creds);
+    }
 
     // Handle file dialog commits
     if (!file_dialog_is_visible(fdlg_volpkg)) {
@@ -700,7 +725,7 @@ int main(int argc, char **argv) {
   keybinds_dialog_free(keybinds_dlg);
   file_dialog_free(fdlg_volpkg);
   file_dialog_free(fdlg_zarr);
-  file_dialog_free(fdlg_remote);
+  s3_browser_free(s3_brow);
   cred_dialog_free(cred_dlg);
   keybind_free(binds);
   settings_close(prefs);

@@ -95,7 +95,7 @@ class Conv3dBlock:
     self.norm = nn.InstanceNorm(out_ch)   # tinygrad InstanceNorm works across spatial dims
 
   def __call__(self, x: "Tensor") -> "Tensor":
-    return self.norm(self.conv(x)).leakyrelu()
+    return self.norm(self.conv(x)).leaky_relu()
 
 
 class _EncLevel:

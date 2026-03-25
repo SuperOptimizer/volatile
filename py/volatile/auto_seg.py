@@ -324,9 +324,25 @@ class AutoSegmenter:
     d2_proj = self._project_onto_normals(d1_grad, normal_field)
     d2 = _scale_to_m1_1(d1_Gz if np.abs(d2_proj).max() < 1e-4 else d2_proj)
 
-    # 6. Bell-curve threshold: inflection (|d2| small) with strong gradient (|d1| large)
-    mask_recto = (np.abs(d2) < self.threshold_der2) & (d1 > self.threshold_der)
-    mask_verso = (np.abs(d2) < self.threshold_der2) & (d1 < -self.threshold_der)
+    # 6. Bell-curve threshold: inflection detected via zero-crossing of d2 with
+    #    strong gradient (|d1| large).
+    #
+    #    A zero-crossing of d2 means d2[z] and d2[z+1] have opposite signs.
+    #    We flag voxel z when the sign flip happens between z and z+1 and d1 is large
+    #    at the higher-magnitude side.  We also keep the original near-zero test as a
+    #    secondary criterion so the two modes compose via OR.
+    d2_near_zero = (np.abs(d2) < self.threshold_der2)
+
+    # Pad d2 to detect sign changes: positive-to-negative = rising edge of surface
+    d2_padded = np.pad(d2, ((0, 1), (0, 0), (0, 0)), mode="edge")
+    d2_next   = d2_padded[1:, :, :]                                       # d2 at z+1
+    # Zero-crossing: current positive, next negative → surface at current z (recto)
+    zc_recto = (d2 > 0) & (d2_next <= 0) & (d1 > self.threshold_der)
+    # Zero-crossing: current negative, next positive → verso side
+    zc_verso = (d2 < 0) & (d2_next >= 0) & (d1 < -self.threshold_der)
+
+    mask_recto = d2_near_zero & (d1 > self.threshold_der)  | zc_recto
+    mask_verso = d2_near_zero & (d1 < -self.threshold_der) | zc_verso
     mask = mask_recto | mask_verso
 
     # Normals: use the precomputed normal field where surface; flip verso side

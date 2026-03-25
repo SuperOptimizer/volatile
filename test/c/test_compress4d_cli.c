@@ -80,10 +80,12 @@ static bool make_synthetic_zarr(const char *zarr_dir, float *out_orig) {
     SYNTH_DIM, SYNTH_DIM, SYNTH_DIM);
   fclose(f);
 
-  // Build raw float data
+  // Build raw float data: values in [-50, 50] so they fit within ±63.5
+  // (the ±127*0.5 clamp for quality=0.5 used in roundtrip tests)
   float *data = malloc(SYNTH_N * sizeof(float));
   if (!data) return false;
-  for (int i = 0; i < SYNTH_N; i++) data[i] = (float)i;
+  for (int i = 0; i < SYNTH_N; i++)
+    data[i] = sinf((float)i * 0.1f) * 40.0f + cosf((float)i * 0.07f) * 10.0f;
   if (out_orig) memcpy(out_orig, data, SYNTH_N * sizeof(float));
 
   // chunk file: 0.0.0
