@@ -19,6 +19,7 @@ keybind_map       *keybind_new(void);    // creates with VC3D-compatible default
 void               keybind_free(keybind_map *m);
 void               keybind_set(keybind_map *m, action_id action, int sdl_scancode, int modifiers);
 int                keybind_lookup(const keybind_map *m, int sdl_scancode, int modifiers); // action_id or -1
+void               keybind_get(const keybind_map *m, action_id action, int *sdl_scancode_out, int *modifiers_out);
 const char        *keybind_action_name(action_id a);
 bool               keybind_save_json(const keybind_map *m, const char *path);
 keybind_map       *keybind_load_json(const char *path);  // falls back to defaults on failure

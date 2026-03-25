@@ -24,6 +24,8 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   plugin.c
   crosshair.c
   slice_controller.c
+  draw_panel.c
+  file_dialog.c
   layout.c
   approval_mask.c
   drawing.c
@@ -31,8 +33,19 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   vol_selector.c
   window_range.c
   toolbar.c
+  menubar.c
   tool_runner.c
   cred_dialog.c
+  viewer_controls.c
+  settings_dialog.c
+  overlay_vol.c
+  seg_panels.c
+  dt_panel.c
+  point_panel.c
+  vol_info_panel.c
+  review_report.c
+  about_dialog.c
+  keybinds_dialog.c
 )
 
 target_include_directories(volatile_gui PUBLIC

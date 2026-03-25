@@ -35,6 +35,10 @@ void viewer_set_overlays(slice_viewer *v, const overlay_list *overlays);
 // render the current view to a pixel buffer (RGBA, width*height*4)
 void viewer_render(slice_viewer *v, uint8_t *pixels, int width, int height);
 
+// drive zoom-settle countdown and progressive refinement (~30 Hz).
+// returns true while background work is pending.
+bool viewer_tick(slice_viewer *v);
+
 // get the 3D world position under a screen pixel
 vec3f viewer_screen_to_world(const slice_viewer *v, float sx, float sy);
 

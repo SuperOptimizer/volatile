@@ -105,6 +105,12 @@ void keybind_set(keybind_map *m, action_id action, int sdl_scancode, int modifie
   m->bindings[action].modifiers = modifiers;
 }
 
+void keybind_get(const keybind_map *m, action_id action, int *sc_out, int *mod_out) {
+  if (!m || action < 0 || action >= ACTION_COUNT) return;
+  if (sc_out)  *sc_out  = m->bindings[action].scancode;
+  if (mod_out) *mod_out = m->bindings[action].modifiers;
+}
+
 int keybind_lookup(const keybind_map *m, int sdl_scancode, int modifiers) {
   for (int a = 0; a < ACTION_COUNT; a++) {
     if (m->bindings[a].scancode == sdl_scancode && m->bindings[a].modifiers == modifiers) return a;

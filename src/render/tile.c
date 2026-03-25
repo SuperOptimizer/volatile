@@ -270,3 +270,141 @@ int tile_renderer_pending(const tile_renderer *r) {
   pthread_mutex_unlock((pthread_mutex_t *)&r->pending_mu);
   return n;
 }
+
+// ---------------------------------------------------------------------------
+// slice_cache — LRU image cache
+//
+// Implemented as a fixed-size array with an LRU counter (timestamp).  For
+// typical screen-sized tile grids (< 256 entries) a linear scan is O(1) in
+// practice.  Eviction removes the entry with the smallest access_time.
+// ---------------------------------------------------------------------------
+
+#include <math.h>
+
+typedef struct {
+  slice_cache_key  key;
+  uint8_t         *pixels;      // owned
+  int8_t           level;
+  uint64_t         access_time; // logical clock; higher = more recently used
+  bool             valid;
+} sc_entry;
+
+struct slice_cache {
+  sc_entry *entries;
+  int       capacity;
+  uint64_t  clock;  // monotonically increasing logical clock
+};
+
+static bool sc_key_eq(slice_cache_key a, slice_cache_key b) {
+  return a.col == b.col && a.row == b.row &&
+         a.scale_q == b.scale_q && a.z_off_q == b.z_off_q &&
+         a.level == b.level && a.params_hash == b.params_hash;
+}
+
+slice_cache *slice_cache_new(int max_entries) {
+  if (max_entries <= 0) max_entries = 256;
+  slice_cache *c = calloc(1, sizeof(*c));
+  if (!c) return NULL;
+  c->entries = calloc((size_t)max_entries, sizeof(sc_entry));
+  if (!c->entries) { free(c); return NULL; }
+  c->capacity = max_entries;
+  c->clock = 1;
+  return c;
+}
+
+void slice_cache_free(slice_cache *c) {
+  if (!c) return;
+  for (int i = 0; i < c->capacity; i++)
+    if (c->entries[i].valid) free(c->entries[i].pixels);
+  free(c->entries);
+  free(c);
+}
+
+slice_cache_key slice_cache_make_key(int col, int row, float scale, float z_offset,
+                                      int level, uint32_t params_hash) {
+  return (slice_cache_key){
+    .col         = col,
+    .row         = row,
+    .scale_q     = (int16_t)(int)(roundf(log2f(scale > 0.0f ? scale : 1.0f) * 32.0f)),
+    .z_off_q     = (int16_t)(int)(roundf(z_offset * 4.0f)),
+    .level       = (int8_t)level,
+    .params_hash = params_hash,
+  };
+}
+
+const slice_cache_entry *slice_cache_get(slice_cache *c, slice_cache_key key) {
+  for (int i = 0; i < c->capacity; i++) {
+    sc_entry *e = &c->entries[i];
+    if (e->valid && sc_key_eq(e->key, key)) {
+      e->access_time = c->clock++;
+      // Return a pointer into the internal entry.  Caller must not outlive next put.
+      // We cast to the public type since it shares the same pixel/level fields.
+      return (const slice_cache_entry *)(void *)&e->pixels;
+    }
+  }
+  return NULL;
+}
+
+bool slice_cache_get_best(slice_cache *c, slice_cache_key key,
+                           slice_cache_entry *out_entry) {
+  // Try exact level, then progressively coarser.
+  for (int delta = 0; delta <= SLICE_CACHE_MAX_COARSER; delta++) {
+    slice_cache_key k = key;
+    k.level = (int8_t)(key.level + delta);
+    for (int i = 0; i < c->capacity; i++) {
+      sc_entry *e = &c->entries[i];
+      if (e->valid && sc_key_eq(e->key, k)) {
+        e->access_time = c->clock++;
+        out_entry->pixels = e->pixels;
+        out_entry->level  = e->level;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void slice_cache_put(slice_cache *c, slice_cache_key key, uint8_t *pixels, int8_t level) {
+  // Check if entry already exists (update in place).
+  for (int i = 0; i < c->capacity; i++) {
+    sc_entry *e = &c->entries[i];
+    if (e->valid && sc_key_eq(e->key, key)) {
+      free(e->pixels);
+      e->pixels      = pixels;
+      e->level       = level;
+      e->access_time = c->clock++;
+      return;
+    }
+  }
+
+  // Find an empty slot or evict the LRU entry.
+  int target = -1;
+  uint64_t oldest_time = UINT64_MAX;
+  for (int i = 0; i < c->capacity; i++) {
+    sc_entry *e = &c->entries[i];
+    if (!e->valid) { target = i; break; }  // prefer empty slot
+    if (e->access_time < oldest_time) {
+      oldest_time = e->access_time;
+      target = i;
+    }
+  }
+
+  sc_entry *e = &c->entries[target];
+  if (e->valid) free(e->pixels);
+  e->key         = key;
+  e->pixels      = pixels;
+  e->level       = level;
+  e->access_time = c->clock++;
+  e->valid       = true;
+}
+
+void slice_cache_clear(slice_cache *c) {
+  if (!c) return;
+  for (int i = 0; i < c->capacity; i++) {
+    if (c->entries[i].valid) {
+      free(c->entries[i].pixels);
+      c->entries[i].valid = false;
+      c->entries[i].pixels = NULL;
+    }
+  }
+}

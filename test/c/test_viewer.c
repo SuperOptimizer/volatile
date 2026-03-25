@@ -1,11 +1,14 @@
+#define _POSIX_C_SOURCE 200809L
 #include "greatest.h"
 #include "gui/viewer.h"
 #include "render/camera.h"
 #include "render/composite.h"
+#include "render/tile.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -207,6 +210,71 @@ TEST test_screen_to_world_yz(void) {
 }
 
 // ---------------------------------------------------------------------------
+// zoom-settle: viewer_tick counts down and reports done
+// ---------------------------------------------------------------------------
+
+TEST test_zoom_settle_ticks(void) {
+  viewer_config cfg = make_config(0);
+  slice_viewer *v = viewer_new(cfg, NULL);
+  ASSERT(v != NULL);
+
+  // No zoom: tick should immediately be idle
+  ASSERT_FALSE(viewer_tick(v));
+
+  viewer_zoom(v, 2.0f, 100.0f, 100.0f);
+
+  // Tick ZOOM_SETTLE_TICKS times — each should report more work pending
+  int active = 0;
+  for (int i = 0; i < ZOOM_SETTLE_TICKS + 2; i++) {
+    if (viewer_tick(v)) active++;
+    else break;
+  }
+  // Should have been busy for approximately ZOOM_SETTLE_TICKS ticks
+  ASSERT(active >= ZOOM_SETTLE_TICKS - 1);
+  ASSERT(active <= ZOOM_SETTLE_TICKS + 1);
+
+  viewer_free(v);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// slice_cache progressive refinement via viewer
+// ---------------------------------------------------------------------------
+
+TEST test_viewer_progressive_refinement(void) {
+  // Create a viewer with a tile_renderer (not NULL).
+  viewer_config cfg = make_config(0);
+  tile_renderer *r = tile_renderer_new(2);
+  ASSERT(r != NULL);
+  slice_viewer *v = viewer_new(cfg, r);
+  ASSERT(v != NULL);
+
+  // Render once to trigger async tile submissions.
+  int W = 256, H = 256;
+  uint8_t *pixels = malloc((size_t)W * H * 4);
+  ASSERT(pixels != NULL);
+  viewer_render(v, pixels, W, H);
+
+  // Wait briefly for background renders to complete.
+  struct timespec ts = {0, 20000000}; // 20 ms
+  nanosleep(&ts, NULL);
+
+  // Render again — completed tiles should now be in the slice cache.
+  viewer_render(v, pixels, W, H);
+
+  // Any tile at pyramid level 0 or coarser should result in non-zero pixels
+  // (filled by rasterize_tile with mid-grey since no volume is set).
+  int nonzero = 0;
+  for (int i = 0; i < W * H * 4; i++) if (pixels[i]) nonzero++;
+  ASSERT(nonzero > 0);
+
+  free(pixels);
+  viewer_free(v);
+  tile_renderer_free(r);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Suites
 // ---------------------------------------------------------------------------
 
@@ -221,6 +289,8 @@ SUITE(suite_viewer) {
   RUN_TEST(test_screen_to_world_xy);
   RUN_TEST(test_screen_to_world_xz);
   RUN_TEST(test_screen_to_world_yz);
+  RUN_TEST(test_zoom_settle_ticks);
+  RUN_TEST(test_viewer_progressive_refinement);
 }
 
 GREATEST_MAIN_DEFS();

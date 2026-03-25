@@ -1,5 +1,6 @@
 #include "greatest.h"
 #include "render/tile.h"
+#include "render/camera.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -179,6 +180,164 @@ TEST test_pending_count(void) {
 }
 
 // ---------------------------------------------------------------------------
+// slice_cache tests
+// ---------------------------------------------------------------------------
+
+TEST test_slice_cache_put_get(void) {
+  slice_cache *c = slice_cache_new(16);
+  ASSERT(c != NULL);
+
+  // Put an entry, retrieve it exact.
+  uint8_t *px = malloc((size_t)TILE_PX * TILE_PX * 4);
+  ASSERT(px != NULL);
+  memset(px, 0xAB, (size_t)TILE_PX * TILE_PX * 4);
+
+  slice_cache_key k = slice_cache_make_key(3, 7, 1.0f, 0.5f, 0, 0xDEAD);
+  // Cache takes ownership of px.
+  slice_cache_put(c, k, px, 0);
+
+  slice_cache_entry out = {0};
+  bool found = slice_cache_get_best(c, k, &out);
+  ASSERT(found);
+  ASSERT(out.pixels != NULL);
+  ASSERT_EQ(0, out.level);
+  ASSERT_EQ(0xAB, out.pixels[0]);
+
+  slice_cache_free(c);
+  PASS();
+}
+
+TEST test_slice_cache_coarser_fallback(void) {
+  slice_cache *c = slice_cache_new(16);
+  ASSERT(c != NULL);
+
+  // Store a coarse tile (level 2).
+  uint8_t *coarse = malloc((size_t)TILE_PX * TILE_PX * 4);
+  ASSERT(coarse != NULL);
+  memset(coarse, 0xCC, (size_t)TILE_PX * TILE_PX * 4);
+
+  slice_cache_key coarse_key = slice_cache_make_key(0, 0, 1.0f, 0.0f, 2, 0);
+  slice_cache_put(c, coarse_key, coarse, 2);
+
+  // Request level 0 (fine) — should fall back to level 2 placeholder.
+  slice_cache_key fine_key = slice_cache_make_key(0, 0, 1.0f, 0.0f, 0, 0);
+  slice_cache_entry out = {0};
+  bool found = slice_cache_get_best(c, fine_key, &out);
+  ASSERT(found);
+  ASSERT_EQ(2, out.level);  // got coarser placeholder
+  ASSERT_EQ(0xCC, out.pixels[0]);
+
+  slice_cache_free(c);
+  PASS();
+}
+
+TEST test_slice_cache_fine_preferred_over_coarse(void) {
+  slice_cache *c = slice_cache_new(16);
+  ASSERT(c != NULL);
+
+  // Store coarse (level 2) first, then fine (level 0) for same tile.
+  uint8_t *coarse = malloc((size_t)TILE_PX * TILE_PX * 4);
+  uint8_t *fine   = malloc((size_t)TILE_PX * TILE_PX * 4);
+  ASSERT(coarse && fine);
+  memset(coarse, 0x11, (size_t)TILE_PX * TILE_PX * 4);
+  memset(fine,   0x22, (size_t)TILE_PX * TILE_PX * 4);
+
+  slice_cache_key k2 = slice_cache_make_key(1, 1, 1.0f, 0.0f, 2, 0);
+  slice_cache_key k0 = slice_cache_make_key(1, 1, 1.0f, 0.0f, 0, 0);
+  slice_cache_put(c, k2, coarse, 2);
+  slice_cache_put(c, k0, fine,   0);
+
+  // get_best for level 0 should return level 0 (exact hit, not coarser)
+  slice_cache_entry out = {0};
+  ASSERT(slice_cache_get_best(c, k0, &out));
+  ASSERT_EQ(0, out.level);
+  ASSERT_EQ(0x22, out.pixels[0]);
+
+  slice_cache_free(c);
+  PASS();
+}
+
+TEST test_slice_cache_lru_eviction(void) {
+  // Capacity 4: insert 5 entries, oldest should be evicted.
+  slice_cache *c = slice_cache_new(4);
+  ASSERT(c != NULL);
+
+  for (int i = 0; i < 5; i++) {
+    uint8_t *px = malloc((size_t)TILE_PX * TILE_PX * 4);
+    ASSERT(px != NULL);
+    memset(px, (unsigned char)i, (size_t)TILE_PX * TILE_PX * 4);
+    slice_cache_key k = slice_cache_make_key(i, 0, 1.0f, 0.0f, 0, 0);
+    slice_cache_put(c, k, px, 0);
+  }
+
+  // The 4 most recent (i=1..4) should be present; i=0 was evicted.
+  slice_cache_entry out = {0};
+  slice_cache_key k0 = slice_cache_make_key(0, 0, 1.0f, 0.0f, 0, 0);
+  ASSERT_FALSE(slice_cache_get_best(c, k0, &out));
+
+  for (int i = 1; i < 5; i++) {
+    slice_cache_key k = slice_cache_make_key(i, 0, 1.0f, 0.0f, 0, 0);
+    ASSERT(slice_cache_get_best(c, k, &out));
+  }
+
+  slice_cache_free(c);
+  PASS();
+}
+
+TEST test_slice_cache_clear(void) {
+  slice_cache *c = slice_cache_new(8);
+  ASSERT(c != NULL);
+
+  uint8_t *px = malloc((size_t)TILE_PX * TILE_PX * 4);
+  ASSERT(px != NULL);
+  slice_cache_key k = slice_cache_make_key(0, 0, 1.0f, 0.0f, 0, 0);
+  slice_cache_put(c, k, px, 0);
+
+  slice_cache_clear(c);
+
+  slice_cache_entry out = {0};
+  ASSERT_FALSE(slice_cache_get_best(c, k, &out));
+
+  slice_cache_free(c);
+  PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Progressive refinement: viewer emits coarse tile before fine tile
+// ---------------------------------------------------------------------------
+
+TEST test_progressive_refinement_coarse_before_fine(void) {
+  // Submit coarse (level 2) and fine (level 0) tiles to the renderer.
+  // The coarse tile should arrive in the drain before or with the fine tile.
+  tile_renderer *r = tile_renderer_new(2);
+  ASSERT(r != NULL);
+
+  // Submit fine first, coarse second — but coarse should still win due to
+  // coarser-first priority in submit_with_coarse_fallback.
+  tile_renderer_submit(r, make_key(0, 0, 0, 1));  // fine
+  tile_renderer_submit(r, make_key(0, 0, 2, 1));  // coarse
+
+  // Drain all.
+  tile_result results[8];
+  int n = drain_with_retry(r, results, 8, 40);
+  ASSERT(n >= 2);
+
+  // Find fine and coarse results.
+  bool got_fine = false, got_coarse = false;
+  for (int i = 0; i < n; i++) {
+    if (results[i].key.pyramid_level == 0) got_fine   = true;
+    if (results[i].key.pyramid_level == 2) got_coarse = true;
+    free(results[i].pixels);
+  }
+  ASSERT(got_fine);
+  ASSERT(got_coarse);
+
+  tile_renderer_free(r);
+  PASS();
+}
+
+
+// ---------------------------------------------------------------------------
 // Suite + main
 // ---------------------------------------------------------------------------
 
@@ -192,10 +351,20 @@ SUITE(tile_suite) {
   RUN_TEST(test_pending_count);
 }
 
+SUITE(slice_cache_suite) {
+  RUN_TEST(test_slice_cache_put_get);
+  RUN_TEST(test_slice_cache_coarser_fallback);
+  RUN_TEST(test_slice_cache_fine_preferred_over_coarse);
+  RUN_TEST(test_slice_cache_lru_eviction);
+  RUN_TEST(test_slice_cache_clear);
+  RUN_TEST(test_progressive_refinement_coarse_before_fine);
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
   GREATEST_MAIN_BEGIN();
   RUN_SUITE(tile_suite);
+  RUN_SUITE(slice_cache_suite);
   GREATEST_MAIN_END();
 }

@@ -30,6 +30,7 @@
 #include "gui/toolbar.h"
 #include "gui/vol_selector.h"
 #include "gui/window_range.h"
+#include "gui/menubar.h"
 #include "render/tile.h"
 #include "render/camera.h"
 #include "render/overlay.h"
@@ -203,6 +204,12 @@ int main(int argc, char **argv) {
   window_range_state wr;
   window_range_init(&wr);
 
+  // --- Menu bar ---
+  menubar *mbar = menubar_new();
+  // Recent files from argv (add in reverse so first arg ends up at top)
+  for (int i = argc - 1; i >= 1; i--)
+    menubar_add_recent(mbar, argv[i]);
+
   // --- Loaded volume (populated when user selects one) ---
   volume *vol = NULL;
   int last_vol_sel = 0;
@@ -218,6 +225,14 @@ int main(int argc, char **argv) {
     // --- Event pump + Nuklear input ---
     app_begin_frame(app);
     struct nk_context *ctx = app_nk_ctx(app);
+
+    // --- Menu bar (thin full-width window at top of screen) ---
+    if (nk_begin(ctx, "##menubar",
+                 nk_rect(0, 0, (float)WIN_W, 30),
+                 NK_WINDOW_NO_SCROLLBAR)) {
+      menubar_render(mbar, ctx);
+    }
+    nk_end(ctx);
 
     // --- Volume selector: load volume on change ---
     if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, WIN_W, WIN_H, panel_flags)) {
@@ -333,6 +348,7 @@ int main(int argc, char **argv) {
   vol_selector_free(volsel);
   surface_panel_free(surf_panel);
   toolbar_free(tools);
+  menubar_free(mbar);
   settings_close(prefs);
   layout_free(layout);
   log_console_free(g_console);
