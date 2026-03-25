@@ -227,8 +227,8 @@ quad_surface *tracer_grow_patch(tracer *t, const quad_surface *seed,
   // GROWTH_ROW  → expand row count (pad top/bottom), cols fixed.
   // GROWTH_COL  → expand col count (pad left/right), rows fixed.
   // GROWTH_ALL  → pad both.
-  int grow_r = (dir == GROWTH_COL) ? 0 : generations;
-  int grow_c = (dir == GROWTH_ROW) ? 0 : generations;
+  int grow_r = (dir == GROWTH_ROW) ? 0 : generations;
+  int grow_c = (dir == GROWTH_COL) ? 0 : generations;
   int out_rows = seed_rows + 2 * grow_r;
   int out_cols = seed_cols + 2 * grow_c;
 
