@@ -53,9 +53,9 @@ surface_index *surface_index_build(const quad_surface *surf) {
   vec3f mn = surf->points[0], mx = surf->points[0];
   for (int i = 1; i < N; i++) {
     vec3f p = surf->points[i];
-    if (p.x < mn.x) mn.x = p.x;  if (p.x > mx.x) mx.x = p.x;
-    if (p.y < mn.y) mn.y = p.y;  if (p.y > mx.y) mx.y = p.y;
-    if (p.z < mn.z) mn.z = p.z;  if (p.z > mx.z) mx.z = p.z;
+    if (p.x < mn.x) mn.x = p.x; else if (p.x > mx.x) mx.x = p.x;
+    if (p.y < mn.y) mn.y = p.y; else if (p.y > mx.y) mx.y = p.y;
+    if (p.z < mn.z) mn.z = p.z; else if (p.z > mx.z) mx.z = p.z;
   }
   // Pad slightly to avoid edge cases
   mn.x -= 0.5f; mn.y -= 0.5f; mn.z -= 0.5f;
@@ -142,9 +142,9 @@ int surface_index_nearest(const surface_index *idx, vec3f query, float *out_dist
     int x0 = cx-radius_cells, x1 = cx+radius_cells;
     int y0 = cy-radius_cells, y1 = cy+radius_cells;
     int z0 = cz-radius_cells, z1 = cz+radius_cells;
-    if (x0 < 0) x0=0;  if (x1 >= idx->gx) x1=idx->gx-1;
-    if (y0 < 0) y0=0;  if (y1 >= idx->gy) y1=idx->gy-1;
-    if (z0 < 0) z0=0;  if (z1 >= idx->gz) z1=idx->gz-1;
+    if (x0 < 0) x0 = 0; if (x1 >= idx->gx) x1 = idx->gx-1;
+    if (y0 < 0) y0 = 0; if (y1 >= idx->gy) y1 = idx->gy-1;
+    if (z0 < 0) z0 = 0; if (z1 >= idx->gz) z1 = idx->gz-1;
 
     for (int iz = z0; iz <= z1; iz++)
       for (int iy = y0; iy <= y1; iy++)

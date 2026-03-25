@@ -133,44 +133,50 @@ static const char *xml_next_tag(const char *src, const char *tag,
   return e + strlen(close);
 }
 
+// Fill display name from an S3 key or prefix string.
+static void entry_set_name(s3_entry *e, const char *key) {
+  const char *slash = strrchr(key, '/');
+  if (slash && slash[1] != '\0') {
+    snprintf(e->name, sizeof(e->name), "%s", slash + 1);
+  } else if (slash && slash[1] == '\0') {
+    // prefix ending in /: use component before trailing slash
+    char tmp[MAX_PREFIX];
+    int n = (int)(slash - key);
+    if (n >= (int)sizeof(tmp)) n = (int)sizeof(tmp) - 1;
+    memcpy(tmp, key, (size_t)n);
+    tmp[n] = '\0';
+    const char *s2 = strrchr(tmp, '/');
+    snprintf(e->name, sizeof(e->name), "%s/", s2 ? s2 + 1 : tmp);
+  } else {
+    snprintf(e->name, sizeof(e->name), "%s", key);
+  }
+}
+
+// Append one entry to a growable array.
+static bool entries_push(s3_entry **arr, int *count, int *cap,
+                         const char *key, bool is_prefix, int64_t sz) {
+  if (*count == *cap) {
+    int nc = *cap * 2;
+    s3_entry *nb = realloc(*arr, (size_t)nc * sizeof(s3_entry));
+    if (!nb) return false;
+    *arr = nb; *cap = nc;
+  }
+  s3_entry *e = &(*arr)[(*count)++];
+  memset(e, 0, sizeof(*e));
+  snprintf(e->full_key, sizeof(e->full_key), "%s", key);
+  e->is_prefix = is_prefix;
+  e->size      = sz;
+  entry_set_name(e, key);
+  return true;
+}
+
 // Parse ListObjectsV2 XML response into entries array (caller frees).
 static int parse_list_xml(const char *xml, s3_entry **out) {
   if (!xml || !out) return 0;
 
-  // Count upper bound: number of <Key> + <Prefix> tags
-  int cap = 64;
+  int cap = 64, count = 0;
   s3_entry *arr = calloc((size_t)cap, sizeof(s3_entry));
   if (!arr) return 0;
-  int count = 0;
-
-  auto void push(const char *key, bool is_prefix, int64_t size);
-  void push(const char *key, bool is_prefix, int64_t sz) {
-    if (count == cap) {
-      int nc = cap * 2;
-      s3_entry *nb = realloc(arr, (size_t)nc * sizeof(s3_entry));
-      if (!nb) return;
-      arr = nb; cap = nc;
-    }
-    s3_entry *e = &arr[count++];
-    memset(e, 0, sizeof(*e));
-    snprintf(e->full_key, sizeof(e->full_key), "%s", key);
-    e->is_prefix = is_prefix;
-    e->size      = sz;
-    // display name = last component
-    const char *slash = strrchr(key, '/');
-    if (slash && slash[1] != '\0')
-      snprintf(e->name, sizeof(e->name), "%s", slash + 1);
-    else if (slash && slash[1] == '\0') {
-      // prefix ending in /: use component before it
-      char tmp[1024];
-      snprintf(tmp, sizeof(tmp), "%s", key);
-      tmp[slash - key] = '\0';
-      const char *s2 = strrchr(tmp, '/');
-      snprintf(e->name, sizeof(e->name), "%s/", s2 ? s2 + 1 : tmp);
-    } else {
-      snprintf(e->name, sizeof(e->name), "%s", key);
-    }
-  }
 
   // Parse CommonPrefixes (folders)
   const char *cur = xml;
@@ -179,7 +185,7 @@ static int parse_list_xml(const char *xml, s3_entry **out) {
     if (!cp) break;
     char prefix[MAX_PREFIX] = {0};
     const char *after = xml_next_tag(cp, "Prefix", prefix, sizeof(prefix));
-    if (after && prefix[0]) push(prefix, true, 0);
+    if (after && prefix[0]) entries_push(&arr, &count, &cap, prefix, true, 0);
     cur = cp + 1;
   }
 
@@ -193,7 +199,7 @@ static int parse_list_xml(const char *xml, s3_entry **out) {
     xml_next_tag(ct, "Key",  key,    sizeof(key));
     xml_next_tag(ct, "Size", sz_str, sizeof(sz_str));
     if (key[0] && key[strlen(key)-1] != '/')
-      push(key, false, (int64_t)atoll(sz_str));
+      entries_push(&arr, &count, &cap, key, false, (int64_t)atoll(sz_str));
     cur = ct + 1;
   }
 
