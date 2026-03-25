@@ -206,3 +206,10 @@ void app_set_key_handler(app_state_t *s, app_key_fn fn, void *ctx) {
   s->key_fn  = fn;
   s->key_ctx = ctx;
 }
+
+// ---------------------------------------------------------------------------
+// app_get_dpi_scale
+// ---------------------------------------------------------------------------
+float app_get_dpi_scale(const app_state_t *s) {
+  return s ? s->dpi_scale : 1.0f;
+}

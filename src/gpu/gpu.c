@@ -35,8 +35,10 @@ struct gpu_buffer {
 
 struct gpu_pipeline {
   gpu_device       *dev;
-  VkPipeline        pipeline;
-  VkPipelineLayout  layout;
+  VkPipeline        pipeline;       // uses layout (16 storage buffer bindings)
+  VkPipeline        pipeline_empty; // uses layout_empty (0 bindings, for 0-buffer dispatch)
+  VkPipelineLayout  layout;         // layout with 16 storage buffer bindings
+  VkPipelineLayout  layout_empty;   // layout with 0 bindings
   VkDescriptorSetLayout ds_layout;
   VkDescriptorPool  ds_pool;
 };
@@ -342,6 +344,24 @@ gpu_pipeline *gpu_pipeline_create(gpu_device *dev, const uint8_t *spirv, size_t 
     return NULL;
   }
 
+  // Also create an empty layout (0 set layouts) for dispatches with no buffers.
+  VkPipelineLayoutCreateInfo plci_empty = {
+    .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    .setLayoutCount = 0,
+    .pSetLayouts    = NULL,
+  };
+  VkPipelineLayout layout_empty = VK_NULL_HANDLE;
+  if (vkCreatePipelineLayout(vkdev, &plci_empty, NULL, &layout_empty) != VK_SUCCESS) {
+    LOG_WARN("gpu_pipeline_create: vkCreatePipelineLayout (empty) failed");
+    vkDestroyPipelineLayout(vkdev, layout, NULL);
+    vkDestroyDescriptorSetLayout(vkdev, ds_layout, NULL);
+    vkDestroyShaderModule(vkdev, shader, NULL);
+    return NULL;
+  }
+
+  // Use the empty layout for the compute pipeline if shaders have no resources.
+  // We create the pipeline with the empty layout so 0-buffer dispatches don't
+  // require descriptor sets.
   VkComputePipelineCreateInfo cpci = {
     .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
     .stage  = {
@@ -358,6 +378,7 @@ gpu_pipeline *gpu_pipeline_create(gpu_device *dev, const uint8_t *spirv, size_t 
 
   if (r != VK_SUCCESS) {
     LOG_WARN("gpu_pipeline_create: vkCreateComputePipelines failed (%d)", r);
+    vkDestroyPipelineLayout(vkdev, layout_empty, NULL);
     vkDestroyPipelineLayout(vkdev, layout, NULL);
     vkDestroyDescriptorSetLayout(vkdev, ds_layout, NULL);
     return NULL;
@@ -387,15 +408,17 @@ gpu_pipeline *gpu_pipeline_create(gpu_device *dev, const uint8_t *spirv, size_t 
   if (!p) {
     vkDestroyDescriptorPool(vkdev, ds_pool, NULL);
     vkDestroyPipeline(vkdev, pipeline, NULL);
+    vkDestroyPipelineLayout(vkdev, layout_empty, NULL);
     vkDestroyPipelineLayout(vkdev, layout, NULL);
     vkDestroyDescriptorSetLayout(vkdev, ds_layout, NULL);
     return NULL;
   }
-  p->dev       = dev;
-  p->pipeline  = pipeline;
-  p->layout    = layout;
-  p->ds_layout = ds_layout;
-  p->ds_pool   = ds_pool;
+  p->dev          = dev;
+  p->pipeline     = pipeline;
+  p->layout       = layout;
+  p->layout_empty = layout_empty;
+  p->ds_layout    = ds_layout;
+  p->ds_pool      = ds_pool;
   return p;
 }
 
@@ -404,6 +427,7 @@ void gpu_pipeline_destroy(gpu_pipeline *p) {
   VkDevice vkdev = vk_device(p->dev->vk);
   vkDestroyDescriptorPool(vkdev, p->ds_pool, NULL);
   vkDestroyPipeline(vkdev, p->pipeline, NULL);
+  vkDestroyPipelineLayout(vkdev, p->layout_empty, NULL);
   vkDestroyPipelineLayout(vkdev, p->layout, NULL);
   vkDestroyDescriptorSetLayout(vkdev, p->ds_layout, NULL);
   free(p);
@@ -419,41 +443,44 @@ void gpu_dispatch(gpu_device *dev, gpu_pipeline *p,
   assert(dev && p && num_buffers >= 0 && groups_x > 0 && groups_y > 0 && groups_z > 0);
   VkDevice vkdev = vk_device(dev->vk);
 
-  // Allocate a descriptor set from the pipeline's pool.
-  VkDescriptorSetAllocateInfo dsai = {
-    .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    .descriptorPool     = p->ds_pool,
-    .descriptorSetCount = 1,
-    .pSetLayouts        = &p->ds_layout,
-  };
-  VkDescriptorSet ds = VK_NULL_HANDLE;
-  // Reset pool so we can reuse it each dispatch.
-  vkResetDescriptorPool(vkdev, p->ds_pool, 0);
-  vkAllocateDescriptorSets(vkdev, &dsai, &ds);
-
-  // Write buffer descriptors.
   int nb = num_buffers < 16 ? num_buffers : 16;
-  VkDescriptorBufferInfo buf_infos[16];
-  VkWriteDescriptorSet   writes[16];
-  for (int i = 0; i < nb; i++) {
-    buf_infos[i] = (VkDescriptorBufferInfo){ .buffer = buffers[i]->buf, .offset = 0,
-                                             .range  = buffers[i]->size };
-    writes[i] = (VkWriteDescriptorSet){
-      .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet          = ds,
-      .dstBinding      = (uint32_t)i,
-      .descriptorCount = 1,
-      .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      .pBufferInfo     = &buf_infos[i],
-    };
-  }
-  if (nb > 0) vkUpdateDescriptorSets(vkdev, (uint32_t)nb, writes, 0, NULL);
 
   VkCommandPool pool = make_cmd_pool(vkdev, vk_compute_queue_family(dev->vk));
   VkCommandBuffer cb = begin_one_shot(vkdev, pool);
   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->pipeline);
-  vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout,
-                          0, 1, &ds, 0, NULL);
+
+  if (nb > 0) {
+    // Allocate and populate a descriptor set for the storage buffers.
+    VkDescriptorSetAllocateInfo dsai = {
+      .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool     = p->ds_pool,
+      .descriptorSetCount = 1,
+      .pSetLayouts        = &p->ds_layout,
+    };
+    VkDescriptorSet ds = VK_NULL_HANDLE;
+    vkResetDescriptorPool(vkdev, p->ds_pool, 0);
+    vkAllocateDescriptorSets(vkdev, &dsai, &ds);
+
+    VkDescriptorBufferInfo buf_infos[16];
+    VkWriteDescriptorSet   writes[16];
+    for (int i = 0; i < nb; i++) {
+      buf_infos[i] = (VkDescriptorBufferInfo){ .buffer = buffers[i]->buf, .offset = 0,
+                                               .range  = buffers[i]->size };
+      writes[i] = (VkWriteDescriptorSet){
+        .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet          = ds,
+        .dstBinding      = (uint32_t)i,
+        .descriptorCount = 1,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo     = &buf_infos[i],
+      };
+    }
+    vkUpdateDescriptorSets(vkdev, (uint32_t)nb, writes, 0, NULL);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->layout,
+                            0, 1, &ds, 0, NULL);
+  }
+  // When nb == 0: use layout_empty (0 set layouts) — no descriptor sets to bind.
+
   vkCmdDispatch(cb, (uint32_t)groups_x, (uint32_t)groups_y, (uint32_t)groups_z);
   end_one_shot(vkdev, pool, vk_compute_queue(dev->vk), cb);
   vkDestroyCommandPool(vkdev, pool, NULL);

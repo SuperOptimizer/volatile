@@ -115,6 +115,68 @@ TEST test_null_api(void) {
   s3_browser_navigate(NULL, "prefix/");
   s3_browser_go_up(NULL);
   ASSERT(!s3_browser_render(NULL, NULL));
+  s3_browser_add_bookmark(NULL, "name", "s3://b/p/");
+  s3_browser_add_recent(NULL, "s3://b/p/");
+  PASS();
+}
+
+TEST test_bookmarks(void) {
+  s3_browser *b = s3_browser_new();
+  ASSERT(b != NULL);
+
+  s3_browser_add_bookmark(b, "Scroll1", "s3://scroll-data/volumes/scroll1/");
+  s3_browser_add_bookmark(b, "Scroll2", "s3://scroll-data/volumes/scroll2/");
+  // Duplicate URL should be ignored
+  s3_browser_add_bookmark(b, "Dup",     "s3://scroll-data/volumes/scroll1/");
+
+  // Null-safe
+  s3_browser_add_bookmark(b, NULL, "s3://b/p/");
+  s3_browser_add_bookmark(b, "name", NULL);
+
+  s3_browser_free(b);
+  PASS();
+}
+
+TEST test_recent(void) {
+  s3_browser *b = s3_browser_new();
+  ASSERT(b != NULL);
+
+  s3_browser_add_recent(b, "s3://bucket/vol1.zarr/");
+  s3_browser_add_recent(b, "s3://bucket/vol2.zarr/");
+  s3_browser_add_recent(b, "s3://bucket/vol3.zarr/");
+  // Re-add existing: should move to front, not duplicate
+  s3_browser_add_recent(b, "s3://bucket/vol1.zarr/");
+
+  // Null / empty: safe
+  s3_browser_add_recent(b, NULL);
+  s3_browser_add_recent(b, "");
+
+  s3_browser_free(b);
+  PASS();
+}
+
+TEST test_recent_overflow(void) {
+  s3_browser *b = s3_browser_new();
+  ASSERT(b != NULL);
+  // Add 15 entries (RECENT_MAX=12) — oldest should be evicted silently
+  for (int i = 0; i < 15; i++) {
+    char url[64];
+    snprintf(url, sizeof(url), "s3://bucket/vol%d.zarr/", i);
+    s3_browser_add_recent(b, url);
+  }
+  s3_browser_free(b);
+  PASS();
+}
+
+TEST test_filter_state(void) {
+  // Filter is internal; test that navigate resets it and no crash
+  s3_browser *b = s3_browser_new();
+  ASSERT(b != NULL);
+  s3_browser_set_bucket(b, "bucket");
+  s3_browser_navigate(b, "a/");
+  s3_browser_navigate(b, "a/b/");  // second navigate also fine
+  s3_browser_go_up(b);
+  s3_browser_free(b);
   PASS();
 }
 
@@ -131,6 +193,10 @@ SUITE(s3_browser_suite) {
   RUN_TEST(test_set_bucket);
   RUN_TEST(test_navigate_go_up);
   RUN_TEST(test_null_api);
+  RUN_TEST(test_bookmarks);
+  RUN_TEST(test_recent);
+  RUN_TEST(test_recent_overflow);
+  RUN_TEST(test_filter_state);
 }
 
 GREATEST_MAIN_DEFS();

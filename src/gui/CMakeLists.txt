@@ -49,6 +49,7 @@ add_library(volatile_gui STATIC EXCLUDE_FROM_ALL
   statusbar.c
   scalebar.c
   s3_browser.c
+  welcome_panel.c
 )
 
 target_include_directories(volatile_gui PUBLIC

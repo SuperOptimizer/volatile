@@ -58,6 +58,9 @@ struct nk_context *app_nk_ctx(app_state_t *s);
 // Return current logical window size (updated each frame on resize).
 void app_get_size(const app_state_t *s, int *w, int *h);
 
+// Return pixel/logical scale factor (>1 on high-DPI displays).
+float app_get_dpi_scale(const app_state_t *s);
+
 // ---------------------------------------------------------------------------
 // Keyboard event callback
 // ---------------------------------------------------------------------------

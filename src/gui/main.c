@@ -38,6 +38,7 @@
 #include "gui/keybinds_dialog.h"
 #include "gui/file_dialog.h"
 #include "gui/s3_browser.h"
+#include "gui/welcome_panel.h"
 #include "gui/seg_panels.h"
 #include "gui/viewer_controls.h"
 #include "gui/draw_panel.h"
@@ -175,12 +176,17 @@ static void on_key_event(int scancode, int modifiers, bool pressed, void *raw_ct
 // Render helpers
 // ---------------------------------------------------------------------------
 
+// NOTE: panels render in the area BETWEEN menubar (top) and statusbar (bottom)
 static bool panel_begin(struct nk_context *ctx, const app_layout *layout,
-                        panel_id id, int win_w, int win_h, nk_flags flags) {
+                        panel_id id, int win_w, int win_h,
+                        float top_offset, float bot_offset, nk_flags flags) {
   panel_rect r = layout_get_panel(layout, id);
   if (!r.visible || r.w <= 0.0f || r.h <= 0.0f) return false;
-  float px = r.x * (float)win_w, py = r.y * (float)win_h;
-  float pw = r.w * (float)win_w, ph = r.h * (float)win_h;
+  float usable_h = (float)win_h - top_offset - bot_offset;
+  float px = r.x * (float)win_w;
+  float py = top_offset + r.y * usable_h;
+  float pw = r.w * (float)win_w;
+  float ph = r.h * usable_h;
   return nk_begin(ctx, r.title, nk_rect(px, py, pw, ph), flags) != 0;
 }
 
@@ -236,8 +242,12 @@ int main(int argc, char **argv) {
   if (!app) { log_set_callback(NULL, NULL); log_console_free(g_console); return 1; }
 
   int win_w = 1600, win_h = 900;
-  const int MENUBAR_H   = 30;
-  const int STATUSBAR_H = 24;
+
+  // --- Settings (opened early; provides DPI-aware UI sizes and user prefs) ---
+  settings *prefs = settings_open(NULL);
+  float scale       = app_get_dpi_scale(app);
+  float menubar_h   = settings_get_float(prefs, "ui.menubar_height",   30.0f) * scale;
+  float statusbar_h = settings_get_float(prefs, "ui.statusbar_height", 24.0f) * scale;
 
   // --- Layout ---
   app_layout *layout = layout_new_default();
@@ -287,10 +297,11 @@ int main(int argc, char **argv) {
   viewer_set_overlays(vxz, ov_xz);
   viewer_set_overlays(vyz, ov_yz);
 
-  // --- Scale bars (one per slice viewer; default voxel size 65 nm) ---
-  scalebar *sb_xy = scalebar_new(0.065f);
-  scalebar *sb_xz = scalebar_new(0.065f);
-  scalebar *sb_yz = scalebar_new(0.065f);
+  // --- Scale bars (voxel size in µm, default 0.065 µm = 65 nm) ---
+  float voxel_um  = settings_get_float(prefs, "volume.voxel_size_um", 0.065f);
+  scalebar *sb_xy = scalebar_new(voxel_um);
+  scalebar *sb_xz = scalebar_new(voxel_um);
+  scalebar *sb_yz = scalebar_new(voxel_um);
 
   // --- Surface panel ---
   surface_panel *surf_panel = surface_panel_new();
@@ -322,9 +333,6 @@ int main(int argc, char **argv) {
 
   // --- Status bar ---
   statusbar *sbar = statusbar_new();
-
-  // --- Settings ---
-  settings *prefs = settings_open(NULL);
 
   // --- Keybinds ---
   keybind_map *binds = keybind_new();
@@ -363,6 +371,11 @@ int main(int argc, char **argv) {
 
   // --- Tool runner (CLI integration) ---
   tool_runner *runner = tool_runner_new();
+
+  // --- Welcome panel ---
+  welcome_panel *welcome = welcome_panel_new();
+  for (int i = 1; i < argc; i++)
+    welcome_panel_add_recent(welcome, argv[i], argv[i]);
 
   // --- Menu bar ---
   menubar *mbar = menubar_new();
@@ -433,7 +446,7 @@ int main(int argc, char **argv) {
 
     // 2. Menu bar (full-width, 30 px, y=0)
     if (nk_begin(ctx, "##menubar",
-                 nk_rect(0, 0, (float)win_w, (float)MENUBAR_H),
+                 nk_rect(0, 0, (float)win_w, menubar_h),
                  NK_WINDOW_NO_SCROLLBAR)) {
       menubar_render(mbar, ctx);
     }
@@ -441,7 +454,7 @@ int main(int argc, char **argv) {
 
     // 3. Named layout panels
     // --- Volume browser (hidden by default; toggled via View menu) ---
-    if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VOLUME_BROWSER, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Volume", NK_TEXT_LEFT);
       if (vol_selector_render(volsel, ctx)) {
@@ -469,7 +482,7 @@ int main(int argc, char **argv) {
     nk_end(ctx);
 
     // --- Segmentation panel ---
-    if (panel_begin(ctx, layout, PANEL_SEGMENTATION, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_SEGMENTATION, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       nk_layout_row_dynamic(ctx, 22, 1);
       nk_label(ctx, "Volume", NK_TEXT_LEFT);
       if (vol_selector_render(volsel, ctx)) {
@@ -505,13 +518,13 @@ int main(int argc, char **argv) {
     nk_end(ctx);
 
     // --- Surface tree ---
-    if (panel_begin(ctx, layout, PANEL_SURFACE_TREE, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_SURFACE_TREE, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       surface_panel_render(surf_panel, ctx, NULL);
     }
     nk_end(ctx);
 
     // --- Console ---
-    if (panel_begin(ctx, layout, PANEL_CONSOLE, win_w, win_h,
+    if (panel_begin(ctx, layout, PANEL_CONSOLE, win_w, win_h, menubar_h, statusbar_h,
                     NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
       log_console_render(g_console, ctx, NULL);
     }
@@ -526,25 +539,25 @@ int main(int argc, char **argv) {
     crosshair_sync_render_overlays(xhair, vyz, ov_yz);
 
     // --- XY viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_XY, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_XY, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       render_viewer_panel(ctx, vxy, "XY (axial)", sb_xy);
     }
     nk_end(ctx);
 
     // --- XZ viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_XZ, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       render_viewer_panel(ctx, vxz, "XZ (coronal)", sb_xz);
     }
     nk_end(ctx);
 
     // --- YZ viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_YZ, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       render_viewer_panel(ctx, vyz, "YZ (sagittal)", sb_yz);
     }
     nk_end(ctx);
 
     // --- 3D viewer ---
-    if (panel_begin(ctx, layout, PANEL_VIEWER_3D, win_w, win_h, panel_flags)) {
+    if (panel_begin(ctx, layout, PANEL_VIEWER_3D, win_w, win_h, menubar_h, statusbar_h, panel_flags)) {
       render_3d_panel(ctx, v3d);
     }
     nk_end(ctx);
@@ -667,10 +680,10 @@ int main(int argc, char **argv) {
     statusbar_update(sbar, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0,
                      dt_ms > 0.0f ? 1000.0f / dt_ms : 0.0f, 0);
     if (nk_begin(ctx, "##statusbar",
-                 nk_rect(0, (float)(win_h - STATUSBAR_H),
-                         (float)win_w, (float)STATUSBAR_H),
+                 nk_rect(0, (float)(win_h - statusbar_h),
+                         (float)win_w, statusbar_h),
                  NK_WINDOW_NO_SCROLLBAR)) {
-      statusbar_render(sbar, ctx, STATUSBAR_H);
+      statusbar_render(sbar, ctx, statusbar_h);
     }
     nk_end(ctx);
 
