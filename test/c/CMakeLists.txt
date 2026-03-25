@@ -50,6 +50,22 @@ set(_gui_tests
   test_toolbar
 )
 
+# test_sync: compile sync.c directly with an inline mock gitstore (avoids
+# duplicate-symbol clash if gitstore.c is also in volatile_server).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c")
+  add_executable(test_sync
+    test_sync.c
+    ${CMAKE_SOURCE_DIR}/src/server/sync.c
+  )
+  target_include_directories(test_sync PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${greatest_SOURCE_DIR}
+  )
+  target_link_libraries(test_sync PRIVATE volatile_core pthread)
+  add_test(NAME test_sync COMMAND test_sync)
+  set_tests_properties(test_sync PROPERTIES TIMEOUT 10)
+endif()
+
 # tests not listed above (e.g. CLI tests) get core only
 foreach(_src IN LISTS _test_sources)
   get_filename_component(_name ${_src} NAME_WE)

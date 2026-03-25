@@ -26,19 +26,21 @@ int cmd_mirror(int argc, char **argv) {
     return argc < 1 ? 1 : 0;
   }
 
-  const char *url        = argv[0];
-  const char *cache_dir  = NULL;
-  int         level_only = -1;   // -1 = all levels
-  bool        do_rechunk = false;
-  bool        do_compress4d = false;
-  int64_t     rechunk[3] = {64, 64, 64};
+  const char *url            = argv[0];
+  const char *cache_dir      = NULL;
+  int         level_only     = -1;   // -1 = all levels
+  bool        do_rechunk     = false;
+  bool        do_compress4d  = false;
+  bool        force_recompress     = false;
+  bool        no_binary_protocol   = false;
+  int64_t     rechunk[3]     = {64, 64, 64};
 
-  for (int i = 1; i < argc - 1; i++) {
-    if (strcmp(argv[i], "--cache-dir") == 0) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--cache-dir") == 0 && i + 1 < argc) {
       cache_dir = argv[++i];
-    } else if (strcmp(argv[i], "--level") == 0) {
+    } else if (strcmp(argv[i], "--level") == 0 && i + 1 < argc) {
       level_only = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--rechunk") == 0) {
+    } else if (strcmp(argv[i], "--rechunk") == 0 && i + 1 < argc) {
       long long z, y, x;
       if (sscanf(argv[++i], "%lld,%lld,%lld", &z, &y, &x) == 3) {
         rechunk[0] = z; rechunk[1] = y; rechunk[2] = x;
@@ -46,20 +48,23 @@ int cmd_mirror(int argc, char **argv) {
       }
     } else if (strcmp(argv[i], "--compress4d") == 0) {
       do_compress4d = true;
-      --i;  // flag has no argument
+    } else if (strcmp(argv[i], "--force-recompress") == 0) {
+      force_recompress = true;
+      do_compress4d = true;  // implies --compress4d
+    } else if (strcmp(argv[i], "--no-binary-protocol") == 0) {
+      no_binary_protocol = true;
     }
   }
-  // handle trailing flag (no value after it)
-  if (argc >= 2 && strcmp(argv[argc - 1], "--compress4d") == 0)
-    do_compress4d = true;
 
   mirror_config cfg = {
-    .remote_url      = url,
-    .local_cache_dir = cache_dir,
-    .auto_rechunk    = do_rechunk,
-    .auto_compress4d = do_compress4d,
-    .max_cache_bytes = 0,   // use default
-    .prefetch_radius = 0,   // use default
+    .remote_url             = url,
+    .local_cache_dir        = cache_dir,
+    .auto_rechunk           = do_rechunk,
+    .auto_compress4d        = do_compress4d,
+    .force_recompress       = force_recompress,
+    .prefer_binary_protocol = !no_binary_protocol,
+    .max_cache_bytes        = 0,   // use default
+    .prefetch_radius        = 0,   // use default
   };
 
   vol_mirror *mirror = vol_mirror_new(cfg);
@@ -67,6 +72,13 @@ int cmd_mirror(int argc, char **argv) {
     fprintf(stderr, "error: cannot open remote volume: %s\n", url);
     return 1;
   }
+
+  // report detected codec / protocol
+  if (vol_mirror_remote_is_compress4d(mirror))
+    fprintf(stderr, "info: remote codec is compress4d — chunks cached as-is%s\n",
+            force_recompress ? " (force-recompress active)" : "");
+  if (vol_mirror_remote_is_volatile_server(mirror))
+    fprintf(stderr, "info: volatile binary TCP protocol detected — using efficient streaming\n");
 
   volume *rv = vol_mirror_volume(mirror);
   int nlevels = rv ? vol_num_levels(rv) : 1;

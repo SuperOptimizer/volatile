@@ -6,6 +6,7 @@ add_library(volatile_server STATIC
   versioning.c
   review.c
   gitstore.c
+  sync.c
 )
 
 target_include_directories(volatile_server PUBLIC
